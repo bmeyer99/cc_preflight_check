@@ -280,9 +280,36 @@ PSEUDO_PARAMETER_RESOLUTIONS = {
 }
 
 # Helper to resolve simple !Ref and !Sub
-def resolve_value(value, parameters, account_id, region, resources_in_template):
+:start_line:283
+-------
+def resolve_value(value, parameters, account_id, region, resources_in_template, context):
+    """
+    Recursively resolves intrinsic functions and references in a CloudFormation template value.
+    Includes support for Fn::If.
+    """
     if isinstance(value, dict):
-        if "Ref" in value:
+        if "Fn::If" in value:
+            if isinstance(value["Fn::If"], list) and len(value["Fn::If"]) == 3:
+                condition_name = value["Fn::If"][0]
+                value_if_true = value["Fn::If"][1]
+                value_if_false = value["Fn::If"][2]
+                try:
+                    # Evaluate the condition using the evaluate_condition function
+                    condition_result = evaluate_condition(condition_name, template, context) # template is available in this scope
+                    if condition_result:
+                        print(f"    Info: Fn::If condition '{condition_name}' evaluated to True. Resolving 'value_if_true'.")
+                        return resolve_value(value_if_true, parameters, account_id, region, resources_in_template, context)
+                    else:
+                        print(f"    Info: Fn::If condition '{condition_name}' evaluated to False. Resolving 'value_if_false'.")
+                        return resolve_value(value_if_false, parameters, account_id, region, resources_in_template, context)
+                except ValueError as e:
+                    print(f"    Warning: Error evaluating condition '{condition_name}' in Fn::If: {e}", file=sys.stderr)
+                    # Return a placeholder or raise an error for unresolved conditions in Fn::If
+                    return f"UNRESOLVED_CONDITION_IN_FN_IF_{condition_name}"
+            else:
+                print(f"    Warning: Invalid arguments for Fn::If: {value['Fn::If']}", file=sys.stderr)
+                return f"INVALID_FN_IF_FORMAT_{str(value['Fn::If'])}"
+        elif "Ref" in value:
             ref_val = value["Ref"]
             # 1. Check for Pseudo Parameters
             if ref_val in PSEUDO_PARAMETER_RESOLUTIONS:
@@ -328,28 +355,209 @@ def resolve_value(value, parameters, account_id, region, resources_in_template):
                 print(f"Warning: Fn::Sub list form or complex expressions not fully supported for pre-flight resolution: {sub_val}", file=sys.stderr)
                 return str(value)
         elif "Fn::GetAtt" in value:
-             # Pre-flight resolution of GetAtt is hard. Return a placeholder or logical ID.
-            print(f"Warning: Fn::GetAtt resolution not supported in pre-flight: {value}", file=sys.stderr)
-            return f"getatt:{value['Fn::GetAtt'][0]}.{value['Fn::GetAtt'][1]}"
+            # Resolve Fn::GetAtt for common attributes
+            getatt_params = value["Fn::GetAtt"]
+            if not isinstance(getatt_params, list) or len(getatt_params) != 2:
+                print(f"Warning: Invalid Fn::GetAtt format: {value}", file=sys.stderr)
+                return f"INVALID_GETATT_FORMAT_{str(value)}"
+
+            logical_resource_id = getatt_params[0]
+            attribute_name = getatt_params[1]
+
+            resource_def = resources_in_template.get(logical_resource_id)
+            if not resource_def:
+                print(f"Warning: Fn::GetAtt refers to unknown resource: {logical_resource_id}", file=sys.stderr)
+                return f"UNKNOWN_RESOURCE_FOR_GETATT_{logical_resource_id}"
+
+            resource_type = resource_def.get("Type")
+            if not resource_type:
+                print(f"Warning: Resource {logical_resource_id} has no Type defined.", file=sys.stderr)
+                return f"RESOURCE_WITHOUT_TYPE_FOR_GETATT_{logical_resource_id}"
+
+            # Use a consistent format for placeholders
+            placeholder_prefix = f"resolved-getatt-{logical_resource_id.lower()}-{attribute_name.lower()}"
+
+            # --- Implement specific attribute resolution based on resource type ---
+            if resource_type == "AWS::IAM::Role":
+                if attribute_name == "Arn":
+                    return f"arn:aws:iam::PSEUDO_PARAM_AWS::AccountId:role/{placeholder_prefix}"
+                elif attribute_name == "RoleId":
+                    return f"RESOLVED_GETATT_{logical_resource_id.upper()}_ROLEID_AIDAJQABLZS4A3QDU576Q" # Example RoleId format
+            elif resource_type == "AWS::S3::Bucket":
+                if attribute_name == "Arn":
+                    return f"arn:aws:s3:::{placeholder_prefix}"
+                elif attribute_name == "DomainName":
+                    return f"{placeholder_prefix}.s3.amazonaws.com"
+                elif attribute_name == "DualStackDomainName":
+                     return f"{placeholder_prefix}.s3.dualstack.PSEUDO_PARAM_AWS::Region.amazonaws.com"
+                elif attribute_name == "RegionalDomainName":
+                     return f"{placeholder_prefix}.s3.PSEUDO_PARAM_AWS::Region.amazonaws.com"
+                elif attribute_name == "WebsiteURL":
+                     return f"http://{placeholder_prefix}.s3-website-PSEUDO_PARAM_AWS::Region.amazonaws.com"
+            elif resource_type == "AWS::Lambda::Function":
+                if attribute_name == "Arn":
+                    return f"arn:aws:lambda:PSEUDO_PARAM_AWS::Region:PSEUDO_PARAM_AWS::AccountId:function:{placeholder_prefix}"
+                elif attribute_name == "Name":
+                    return f"{placeholder_prefix}"
+            elif resource_type == "AWS::SQS::Queue":
+                if attribute_name == "Arn":
+                    return f"arn:aws:sqs:PSEUDO_PARAM_AWS::Region:PSEUDO_PARAM_AWS::AccountId:{placeholder_prefix}"
+                elif attribute_name == "QueueName":
+                    return f"{placeholder_prefix}"
+                elif attribute_name == "QueueUrl":
+                     return f"https://sqs.PSEUDO_PARAM_AWS::Region.amazonaws.com/PSEUDO_PARAM_AWS::AccountId/{placeholder_prefix}"
+            elif resource_type == "AWS::SNS::Topic":
+                if attribute_name == "TopicArn":
+                    return f"arn:aws:sns:PSEUDO_PARAM_AWS::Region:PSEUDO_PARAM_AWS::AccountId:{placeholder_prefix}"
+                elif attribute_name == "TopicName":
+                    return f"{placeholder_prefix}"
+            elif resource_type == "AWS::KMS::Key":
+                if attribute_name == "Arn":
+                    return f"arn:aws:kms:PSEUDO_PARAM_AWS::Region:PSEUDO_PARAM_AWS::AccountId:key/{placeholder_prefix}"
+                elif attribute_name == "KeyId":
+                    return f"{placeholder_prefix}" # KeyId is a UUID-like string
+            elif resource_type == "AWS::CloudTrail::Trail":
+                if attribute_name == "Arn":
+                    return f"arn:aws:cloudtrail:PSEUDO_PARAM_AWS::Region:PSEUDO_PARAM_AWS::AccountId:trail/{placeholder_prefix}"
+                elif attribute_name == "SnsTopicArn":
+                     # Assuming the SNS topic is also in the template or a known pattern
+                     return f"arn:aws:sns:PSEUDO_PARAM_AWS::Region:PSEUDO_PARAM_AWS::AccountId:resolved-getatt-{logical_resource_id.lower()}-snstopicarn"
+                elif attribute_name == "S3BucketArn":
+                     # Assuming the S3 bucket is also in the template or a known pattern
+                     return f"arn:aws:s3:::resolved-getatt-{logical_resource_id.lower()}-s3bucketarn"
+                elif attribute_name == "S3BucketName":
+                     # Assuming the S3 bucket is also in the template or a known pattern
+                     return f"resolved-getatt-{logical_resource_id.lower()}-s3bucketname"
+
+            # Handle unsupported attributes for known resource types
+            print(f"Warning: Unsupported Fn::GetAtt attribute '{attribute_name}' for resource type '{resource_type}'", file=sys.stderr)
+            return f"UNSUPPORTED_GETATT_ATTRIBUTE_{attribute_name}_ON_RESOURCE_TYPE_{resource_type}"
+
         elif "Fn::Join" in value:
             delimiter = value["Fn::Join"][0]
+:start_line:433
+-------
             list_to_join = value["Fn::Join"][1]
             # Ensure resolution handles None from AWS::NoValue correctly in join
-            resolved_list = [str(resolve_value(item, parameters, account_id, region, resources_in_template)) if resolve_value(item, parameters, account_id, region, resources_in_template) is not None else "" for item in list_to_join]
+            resolved_list = [str(resolve_value(item, parameters, account_id, region, resources_in_template, context)) if resolve_value(item, parameters, account_id, region, resources_in_template, context) is not None else "" for item in list_to_join]
             return delimiter.join(resolved_list)
 
         # Recurse for nested structures
-        return {k: resolve_value(v, parameters, account_id, region, resources_in_template) for k, v in value.items()}
+        return {k: resolve_value(v, parameters, account_id, region, resources_in_template, context) for k, v in value.items()}
     elif isinstance(value, list):
         # Ensure resolution handles None from AWS::NoValue correctly in lists
-        return [resolve_value(item, parameters, account_id, region, resources_in_template) for item in value]
+        return [resolve_value(item, parameters, account_id, region, resources_in_template, context) for item in value]
     # Handle AWS::NoValue resolving to None
     if value is None:
         return None
     return value
 
 
-def parse_template_and_collect_actions(template_path, cfn_parameters, account_id, region):
+def evaluate_condition(condition_name, template, context):
+    """
+    Evaluates a CloudFormation condition based on input values or the template's Conditions block.
+    Supports Fn::Equals, Fn::And, Fn::Or, Fn::Not, and direct condition references.
+    """
+    # Ensure evaluated_conditions dictionary exists in context for memoization
+    if 'evaluated_conditions' not in context:
+        context['evaluated_conditions'] = {}
+
+    # 1. Check if condition_name is present in the input condition values (from P2-T2.1)
+    condition_input_values = context.get("condition_input_values", {})
+    if condition_name in condition_input_values:
+        result = condition_input_values[condition_name]
+        print(f"    Info: Condition '{condition_name}' found in input values: {result}")
+        context['evaluated_conditions'][condition_name] = result # Memoize
+        return result
+
+    # 2. Check if the condition has already been evaluated (memoization)
+    if condition_name in context['evaluated_conditions']:
+        print(f"    Info: Condition '{condition_name}' found in cache: {context['evaluated_conditions'][condition_name]}")
+        return context['evaluated_conditions'][condition_name]
+
+    # 3. Look up condition_name in the template's Conditions block
+    conditions_block = template.get('Conditions', {})
+    condition_definition = conditions_block.get(condition_name)
+
+    if condition_definition is None:
+        # 4. Condition not found in inputs or template
+        raise ValueError(f"Condition '{condition_name}' not found in inputs or template Conditions.")
+
+    print(f"    Evaluating condition '{condition_name}' from template...")
+
+    # 5. Evaluate the condition definition
+    result = False # Default result for unsupported functions
+
+    if isinstance(condition_definition, dict) and len(condition_definition) == 1:
+        intrinsic_function, args = list(condition_definition.items())[0]
+
+        if intrinsic_function == "Fn::Equals":
+            if isinstance(args, list) and len(args) == 2:
+                value1 = resolve_value(args[0], context["parameters"], context["account_id"], context["region"], context["resources_in_template"])
+                value2 = resolve_value(args[1], context["parameters"], context["account_id"], context["region"], context["resources_in_template"])
+                # CloudFormation compares resolved values as strings for Fn::Equals
+                result = str(value1) == str(value2)
+                print(f"    Info: Evaluated Fn::Equals for '{condition_name}': {value1} == {value2} -> {result}")
+            else:
+                print(f"    Warning: Invalid arguments for Fn::Equals in condition '{condition_name}': {args}", file=sys.stderr)
+                # Decide whether to return False or raise error for invalid format
+                # Returning False for now, but raising error might be better for strict validation
+:start_line:497
+-------
+                result = False # Treat invalid format as false
+        elif intrinsic_function == "Fn::And":
+            if isinstance(args, list):
+                # Evaluate all conditions in the list. All must be True for Fn::And to be True.
+                result = all(evaluate_condition(arg, template, context) for arg in args)
+                print(f"    Info: Evaluated Fn::And for '{condition_name}': {result}")
+            else:
+                print(f"    Warning: Invalid arguments for Fn::And in condition '{condition_name}': {args}", file=sys.stderr)
+                result = False # Treat invalid format as false
+        elif intrinsic_function == "Fn::Or":
+            if isinstance(args, list):
+                # Evaluate all conditions in the list. At least one must be True for Fn::Or to be True.
+                result = any(evaluate_condition(arg, template, context) for arg in args)
+                print(f"    Info: Evaluated Fn::Or for '{condition_name}': {result}")
+            else:
+                print(f"    Warning: Invalid arguments for Fn::Or in condition '{condition_name}': {args}", file=sys.stderr)
+                result = False # Treat invalid format as false
+        elif intrinsic_function == "Fn::Not":
+            if isinstance(args, list) and len(args) == 1:
+                # Evaluate the single condition and negate the result.
+                result = not evaluate_condition(args[0], template, context)
+                print(f"    Info: Evaluated Fn::Not for '{condition_name}': {result}")
+            else:
+                print(f"    Warning: Invalid arguments for Fn::Not in condition '{condition_name}': {args}", file=sys.stderr)
+                result = False # Treat invalid format as false
+        elif intrinsic_function == "Fn::If":
+             # Fn::If is handled in resolve_value, not evaluate_condition
+             print(f"    Warning: Fn::If used directly in Conditions block for '{condition_name}'. This is not standard CloudFormation behavior. Returning False.", file=sys.stderr)
+             result = False
+        else:
+            print(f"    Warning: Unknown intrinsic function '{intrinsic_function}' in condition '{condition_name}'. Returning False.", file=sys.stderr)
+            result = False # Unknown functions evaluate to False
+
+    elif isinstance(condition_definition, str):
+        # Direct condition reference
+        referenced_condition_name = condition_definition
+        print(f"    Info: Condition '{condition_name}' is a direct reference to '{referenced_condition_name}'.")
+        # Recursively evaluate the referenced condition
+        try:
+            result = evaluate_condition(referenced_condition_name, template, context)
+        except ValueError as e:
+            # If the referenced condition is not found, propagate the error
+            raise ValueError(f"Condition '{condition_name}' references an unknown condition '{referenced_condition_name}'.") from e
+
+    else:
+        print(f"    Warning: Invalid condition definition format for '{condition_name}': {condition_definition}. Returning False.", file=sys.stderr)
+        result = False # Invalid format evaluates to False
+
+    # Store the result for memoization
+    context['evaluated_conditions'][condition_name] = result
+    return result
+
+
+def parse_template_and_collect_actions(template_path, cfn_parameters, account_id, region, condition_input_values):
     """
     Parses the CloudFormation template and attempts to collect IAM actions
     and resource ARNs required for deployment.
@@ -368,12 +576,24 @@ def parse_template_and_collect_actions(template_path, cfn_parameters, account_id
 
     template_parameters = template.get("Parameters", {})
     resources = template.get("Resources", {})
-    
+    conditions_block = template.get("Conditions", {}) # Store the Conditions block
+
+    # Create a context dictionary to pass around relevant information
+    context = {
+        "account_id": account_id,
+        "region": region,
+        "parameters": {}, # Will be populated with resolved parameters
+        "resources_in_template": resources,
+        "conditions_block": conditions_block,
+        "condition_input_values": condition_input_values # Store input values in context
+    }
+
     # Substitute provided parameters with their defaults if not provided
     resolved_cfn_parameters = {}
+    context["parameters"] = resolved_cfn_parameters # Add resolved parameters to context
     for param_key, param_def in template_parameters.items():
         if param_key in cfn_parameters:
-            resolved_cfn_parameters[param_key] = cfn_parameters[param_key]
+            resolved_cfn_parameters[param_key] = cfn_cli_parameters[param_key]
         elif "Default" in param_def:
             resolved_cfn_parameters[param_key] = param_def["Default"]
         # Else, parameter is required but not provided - CloudFormation would fail.
@@ -419,38 +639,38 @@ def parse_template_and_collect_actions(template_path, cfn_parameters, account_id
 
             # 2. Construct resource ARN pattern for simulation
             arn_pattern_str = map_entry.get("arn_pattern", "arn:aws:*:{region}:{accountId}:{resourceLogicalIdPlaceholder}/*") # Default to broad if no pattern
-            
+
             # Try to make ARN more specific using known properties or parameters
             # This is highly dependent on the resource type and its naming scheme
             resource_name_from_props = "*" # Default to wildcard
             if resource_type == "AWS::IAM::Role":
                 role_name_val = properties.get("RoleName")
                 if role_name_val:
-                    resource_name_from_props = resolve_value(role_name_val, resolved_cfn_parameters, account_id, region, resources)
+                    resource_name_from_props = resolve_value(role_name_val, context["parameters"], context["account_id"], context["region"], context["resources_in_template"])
                 else: # Role name will be auto-generated by CloudFormation
                     resource_name_from_props = f"{logical_id}-*" # Placeholder for CFN generated name
             elif resource_type == "AWS::S3::Bucket":
                 bucket_name_val = properties.get("BucketName")
                 if bucket_name_val:
-                     resource_name_from_props = resolve_value(bucket_name_val, resolved_cfn_parameters, account_id, region, resources)
-                else: # Bucket name will be auto-generated. S3 ARNs don't typically include region/account like others.
-                    arn_pattern_str = "arn:aws:s3:::{bucketNamePlaceholder}-*" # Special handling for S3 generated names
-                    resource_name_from_props = "" # Bucket name is the main part for S3 ARN
-            elif resource_type in ["AWS::SQS::Queue", "AWS::SNS::Topic", "AWS::CloudTrail::Trail", "AWS::Lambda::Function"]:
-                name_prop_key = None
-                if resource_type == "AWS::SQS::Queue": name_prop_key = "QueueName"
-                elif resource_type == "AWS::SNS::Topic": name_prop_key = "TopicName"
-                elif resource_type == "AWS::CloudTrail::Trail": name_prop_key = "TrailName" # TrailName is optional, CFN generates if absent
-                elif resource_type == "AWS::Lambda::Function": name_prop_key = "FunctionName"
+                     resource_name_from_props = resolve_value(bucket_name_val, context["parameters"], context["account_id"], context["region"], context["resources_in_template"])
+                 else: # Bucket name will be auto-generated. S3 ARNs don't typically include region/account like others.
+                     arn_pattern_str = "arn:aws:s3:::{bucketNamePlaceholder}-*" # Special handling for S3 generated names
+                     resource_name_from_props = "" # Bucket name is the main part for S3 ARN
+             elif resource_type in ["AWS::SQS::Queue", "AWS::SNS::Topic", "AWS::CloudTrail::Trail", "AWS::Lambda::Function"]:
+                 name_prop_key = None
+                 if resource_type == "AWS::SQS::Queue": name_prop_key = "QueueName"
+                 elif resource_type == "AWS::SNS::Topic": name_prop_key = "TopicName"
+                 elif resource_type == "AWS::CloudTrail::Trail": name_prop_key = "TrailName" # TrailName is optional, CFN generates if absent
+                 elif resource_type == "AWS::Lambda::Function": name_prop_key = "FunctionName"
 
-                if name_prop_key and properties.get(name_prop_key):
-                    resource_name_from_props = resolve_value(properties.get(name_prop_key), resolved_cfn_parameters, account_id, region, resources)
-                else: # Name will be auto-generated by CloudFormation
-                    resource_name_from_props = f"{logical_id}-*"
-            
-            # Resolve Account ID and Region from template context using resolve_value
-            resolved_account_id = resolve_value({"Ref": "AWS::AccountId"}, resolved_cfn_parameters, account_id, region, resources)
-            resolved_region = resolve_value({"Ref": "AWS::Region"}, resolved_cfn_parameters, account_id, region, resources)
+                 if name_prop_key and properties.get(name_prop_key):
+                     resource_name_from_props = resolve_value(properties.get(name_prop_key), context["parameters"], context["account_id"], context["region"], context["resources_in_template"])
+                 else: # Name will be auto-generated by CloudFormation
+                     resource_name_from_props = f"{logical_id}-*"
+
+             # Resolve Account ID and Region from template context using resolve_value
+             resolved_account_id = resolve_value({"Ref": "AWS::AccountId"}, context["parameters"], context["account_id"], context["region"], context["resources_in_template"])
+             resolved_region = resolve_value({"Ref": "AWS::Region"}, context["parameters"], context["account_id"], context["region"], context["resources_in_template"])
 
             # Substitute placeholders in ARN pattern using resolved values
             # Ensure resolved values are strings, handle None for AWS::NoValue if it somehow appears here
@@ -466,7 +686,7 @@ def parse_template_and_collect_actions(template_path, cfn_parameters, account_id
                                          .replace("{aliasName}", str(resource_name_from_props)) \
                                          .replace("{stackSetName}", str(resource_name_from_props)) \
                                          .replace("{resourceLogicalIdPlaceholder}", logical_id) # fallback placeholder
-            
+
             # Specific handling for S3 ARN pattern if BucketName was empty and pattern was adjusted
             if resource_type == "AWS::S3::Bucket" and "{bucketNamePlaceholder}" in current_arn:
                  current_arn = current_arn.replace("{bucketNamePlaceholder}", f"cfn-{logical_id.lower()}")
@@ -482,7 +702,7 @@ def parse_template_and_collect_actions(template_path, cfn_parameters, account_id
                 if prop_key in properties:
                     actions_to_simulate.update(prop_actions)
                     if prop_key == "Role" and "iam:PassRole" in prop_actions: # Special handling for PassRole
-                        role_arn_to_pass = resolve_value(properties[prop_key], resolved_cfn_parameters, account_id, region, resources)
+                        role_arn_to_pass = resolve_value(properties[prop_key], context["parameters"], context["account_id"], context["region"], context["resources_in_template"])
                         if isinstance(role_arn_to_pass, str) and role_arn_to_pass.startswith("arn:"):
                             resource_arns_for_simulation.add(role_arn_to_pass)
                         else:
@@ -493,7 +713,7 @@ def parse_template_and_collect_actions(template_path, cfn_parameters, account_id
                             pass_role_placeholder_arn = f"arn:aws:iam::{account_id}:role/{role_arn_to_pass}-*"
                             resource_arns_for_simulation.add(pass_role_placeholder_arn)
                             print(f"    Info: Added potential PassRole ARN for simulation: {pass_role_placeholder_arn} (for role logical ID/name: {role_arn_to_pass})")
-        
+
         # Handle Tags - common across many resources
         if "Tags" in properties:
             # The specific tag action varies (e.g., ec2:CreateTags, s3:PutBucketTagging, iam:TagRole)
@@ -564,7 +784,7 @@ def simulate_iam_permissions(iam_client, principal_arn, actions, resource_arns, 
     if not actions:
         print("  No actions to simulate. Skipping IAM simulation.")
         return True, []
-    
+
     # IAM simulation API has a limit on the number of actions and resources.
     # If lists are very long, they might need to be batched.
     # For this script, we'll try a single call. Max 100 actions. Max 100 resources. Max 50 context entries.
@@ -579,11 +799,11 @@ def simulate_iam_permissions(iam_client, principal_arn, actions, resource_arns, 
         }
         if context_entries:
             simulation_input['ContextEntries'] = context_entries
-        
+
         # print(f"DEBUG: Simulation Input: {json.dumps(simulation_input, indent=2)}")
 
         response = iam_client.simulate_principal_policy(**simulation_input)
-        
+
         # print(f"DEBUG: Simulation Full Response: {json.dumps(response, indent=2)}")
 
 
@@ -616,7 +836,7 @@ def simulate_iam_permissions(iam_client, principal_arn, actions, resource_arns, 
             print("\n  [SUCCESS] All simulated actions are allowed for the principal.")
         else:
             print("\n  [FAILURE] Some simulated actions were DENIED. Review details above.")
-        
+
         return all_allowed, failed_simulations
 
     except ClientError as e:
@@ -634,6 +854,7 @@ def main():
     parser.add_argument("--deploying-principal-arn", required=True, help="ARN of the IAM user/role that will deploy the stack.")
     parser.add_argument("--region", required=True, help="AWS Region for deployment and resource ARN construction.")
     parser.add_argument("--parameters", nargs='*', help="CloudFormation parameters as 'Key=Value' pairs (e.g., OutpostRoleArn=arn:aws:... ExternalID=myid).")
+    parser.add_argument("--condition-values", help="JSON string of condition names and their boolean values (e.g., '{\"IsProduction\": true, \"UseCustomDomain\": false}').")
     parser.add_argument("--profile", help="AWS CLI profile to use.")
     # parser.add_argument("--stack-name", help="Proposed name for the CloudFormation stack.") # Could be used for more specific ARN construction
 
@@ -673,10 +894,29 @@ def main():
                 sys.exit(1)
             key, value = p_item.split("=", 1)
             cfn_cli_parameters[key] = value
-    
+
+    # Parse condition values from JSON string
+    condition_input_values = {}
+    if args.condition_values:
+        try:
+            condition_input_values = json.loads(args.condition_values)
+            if not isinstance(condition_input_values, dict):
+                 raise ValueError("Condition values must be a JSON object.")
+            # Ensure all values are boolean
+            for key, value in condition_input_values.items():
+                if not isinstance(value, bool):
+                    raise ValueError(f"Value for condition '{key}' is not a boolean.")
+        except json.JSONDecodeError as e:
+            print(f"Error: Could not parse --condition-values JSON string. {e}", file=sys.stderr)
+            sys.exit(1)
+        except ValueError as e:
+            print(f"Error: Invalid --condition-values format. {e}", file=sys.stderr)
+            sys.exit(1)
+
     # --- Step 1: Parse Template & Collect Actions/Resource Info ---
+    # Pass condition_input_values to the parsing function
     actions, resource_arns, prerequisite_action_checks = parse_template_and_collect_actions(
-        args.template_file, cfn_cli_parameters, account_id, args.region
+        args.template_file, cfn_cli_parameters, account_id, args.region, condition_input_values
     )
 
     # --- Step 2: Check Prerequisites (e.g., existence of roles from parameters) ---
