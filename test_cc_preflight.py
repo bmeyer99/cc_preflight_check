@@ -1,5 +1,6 @@
 import unittest
 from cc_preflight import resolve_value, PSEUDO_PARAMETER_RESOLUTIONS
+from cc_preflight import RESOURCE_ACTION_MAP
 
 class TestResolveValue(unittest.TestCase):
 
@@ -244,6 +245,84 @@ class TestResolveValue(unittest.TestCase):
         }
         result = resolve_value(value, self.mock_parameters, self.mock_account_id, self.mock_region, self.mock_resources)
         self.assertEqual(result, expected)
+class TestResourceActionMap(unittest.TestCase):
+
+    def test_resource_action_map_structure(self):
+        self.assertIsInstance(RESOURCE_ACTION_MAP, dict)
+        for resource_type, resource_data in RESOURCE_ACTION_MAP.items():
+            self.assertIsInstance(resource_data, dict, f"Value for {resource_type} is not a dictionary")
+            if "operation_actions" in resource_data:
+                self.assertIsInstance(resource_data["operation_actions"], dict, f"operation_actions for {resource_type} is not a dictionary")
+                for operation, actions in resource_data["operation_actions"].items():
+                    self.assertIsInstance(actions, list, f"Actions for {resource_type} operation {operation} is not a list")
+                    for action in actions:
+                        self.assertIsInstance(action, str, f"Action in list for {resource_type} operation {operation} is not a string")
+
+    def test_key_resource_types_present(self):
+        expected_resource_types = [
+            "AWS::IAM::Role",
+            "AWS::CloudFormation::StackSet",
+            "AWS::Lambda::Function",
+            "Custom::PublishRoleDetail",
+            "AWS::KMS::Key",
+            "AWS::S3::Bucket",
+            "AWS::S3::BucketPolicy",
+            "AWS::SQS::Queue",
+            "AWS::SNS::Topic",
+            "AWS::SNS::TopicPolicy",
+            "AWS::CloudTrail::Trail",
+            "AWS::SNS::Subscription",
+            "AWS::SQS::QueuePolicy",
+            # Add other resource types from P1-T1.2 as needed
+        ]
+        for resource_type in expected_resource_types:
+            self.assertIn(resource_type, RESOURCE_ACTION_MAP, f"Resource type {resource_type} not found in RESOURCE_ACTION_MAP")
+
+    def test_key_operation_keys_present(self):
+        resource_types_to_check = [
+            "AWS::IAM::Role",
+            "AWS::S3::Bucket",
+            "AWS::Lambda::Function",
+            "AWS::CloudFormation::StackSet",
+        ]
+        expected_operations = ["Create", "Update", "Delete", "Tag"]
+        for resource_type in resource_types_to_check:
+            self.assertIn(resource_type, RESOURCE_ACTION_MAP, f"Resource type {resource_type} not found for operation key check")
+            resource_data = RESOURCE_ACTION_MAP[resource_type]
+            self.assertIn("operation_actions", resource_data, f"operation_actions not found for {resource_type}")
+            for operation in expected_operations:
+                self.assertIn(operation, resource_data["operation_actions"], f"Operation {operation} not found for {resource_type}")
+
+    def test_accurate_action_lists(self):
+        # Based on tasks/P1-T1.2-IdentifyIAMActions.md
+        expected_mappings = {
+            "AWS::IAM::Role": {
+                "Create": ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy", "iam:TagRole"],
+            },
+            "AWS::S3::Bucket": {
+                "Delete": ["s3:DeleteBucket"],
+            },
+            "AWS::Lambda::Function": {
+                "Update": ["lambda:UpdateFunctionConfiguration", "lambda:UpdateFunctionCode", "lambda:TagResource", "lambda:UntagResource"],
+            },
+            "AWS::CloudFormation::StackSet": {
+                "Create": ["cloudformation:CreateStackSet", "cloudformation:CreateStackInstances", "cloudformation:TagResource"],
+            },
+             "AWS::SQS::QueuePolicy": {
+                "Create": ["sqs:AddPermission"],
+            }
+            # Add more specific checks as needed
+        }
+
+        for resource_type, operations in expected_mappings.items():
+            self.assertIn(resource_type, RESOURCE_ACTION_MAP, f"Resource type {resource_type} not found for action list check")
+            resource_data = RESOURCE_ACTION_MAP[resource_type]
+            self.assertIn("operation_actions", resource_data, f"operation_actions not found for {resource_type}")
+            for operation, expected_actions in operations.items():
+                self.assertIn(operation, resource_data["operation_actions"], f"Operation {operation} not found for {resource_type} action list check")
+                actual_actions = resource_data["operation_actions"][operation]
+                # Sort lists for comparison as order might not be guaranteed or important
+                self.assertEqual(sorted(actual_actions), sorted(expected_actions), f"Action list mismatch for {resource_type} operation {operation}")
 
 
 if __name__ == '__main__':
