@@ -16,7 +16,80 @@ def get_aws_account_id(sts_client):
         print(f"Error: Could not determine AWS Account ID. {e}", file=sys.stderr)
         sys.exit(1)
 
-def parse_template_and_collect_actions(template_path, cfn_parameters, account_id, region):
+def evaluate_condition(condition_name, context):
+    """
+    Evaluates a CloudFormation condition based on input values or the template's Conditions block.
+    
+    Args:
+        condition_name: The name of the condition to evaluate
+        context: Dictionary containing template data, resolved parameters, and condition values
+        
+    Returns:
+        Boolean result of the condition evaluation
+    """
+    # Check if we've already evaluated this condition (memoization)
+    if "evaluated_conditions" not in context:
+        context["evaluated_conditions"] = {}
+    
+    if condition_name in context["evaluated_conditions"]:
+        return context["evaluated_conditions"][condition_name]
+    
+    # First check if the condition is directly provided in input values
+    if "condition_values" in context and condition_name in context["condition_values"]:
+        result = context["condition_values"][condition_name]
+        context["evaluated_conditions"][condition_name] = result
+        return result
+    
+    # If not in input values, check if it's defined in the template
+    if "Conditions" in context["template"] and condition_name in context["template"]["Conditions"]:
+        condition_def = context["template"]["Conditions"][condition_name]
+        
+        # Handle different intrinsic functions in conditions
+        if isinstance(condition_def, dict):
+            if "Fn::Equals" in condition_def:
+                # Evaluate Fn::Equals
+                equals_args = condition_def["Fn::Equals"]
+                if len(equals_args) == 2:
+                    left_value = resolve_value(equals_args[0], context["parameters"],
+                                              context["account_id"], context["region"],
+                                              context["template"].get("Resources", {}))
+                    right_value = resolve_value(equals_args[1], context["parameters"],
+                                               context["account_id"], context["region"],
+                                               context["template"].get("Resources", {}))
+                    result = (left_value == right_value)
+                    context["evaluated_conditions"][condition_name] = result
+                    return result
+            
+            # Handle other condition functions (not fully implemented yet)
+            elif "Fn::And" in condition_def:
+                print(f"Warning: Fn::And condition not fully supported yet. Defaulting to False for {condition_name}", file=sys.stderr)
+                context["evaluated_conditions"][condition_name] = False
+                return False
+            elif "Fn::Or" in condition_def:
+                print(f"Warning: Fn::Or condition not fully supported yet. Defaulting to False for {condition_name}", file=sys.stderr)
+                context["evaluated_conditions"][condition_name] = False
+                return False
+            elif "Fn::Not" in condition_def:
+                print(f"Warning: Fn::Not condition not fully supported yet. Defaulting to False for {condition_name}", file=sys.stderr)
+                context["evaluated_conditions"][condition_name] = False
+                return False
+            elif "Fn::If" in condition_def:
+                print(f"Warning: Fn::If condition not fully supported yet. Defaulting to False for {condition_name}", file=sys.stderr)
+                context["evaluated_conditions"][condition_name] = False
+                return False
+            elif "Condition" in condition_def:
+                # Reference to another condition
+                referenced_condition = condition_def["Condition"]
+                result = evaluate_condition(referenced_condition, context)
+                context["evaluated_conditions"][condition_name] = result
+                return result
+    
+    # If we get here, the condition wasn't found
+    print(f"Error: Condition '{condition_name}' not found in input values or template.", file=sys.stderr)
+    context["evaluated_conditions"][condition_name] = False
+    return False
+
+def parse_template_and_collect_actions(template_path, cfn_parameters, account_id, region, condition_values=None):
     """
     Parses the CloudFormation template and attempts to collect IAM actions
     and resource ARNs required for deployment.
@@ -36,6 +109,15 @@ def parse_template_and_collect_actions(template_path, cfn_parameters, account_id
     template_parameters = template.get("Parameters", {})
     resources = template.get("Resources", {})
     
+    # Create context for condition evaluation
+    context = {
+        "template": template,
+        "parameters": {},  # Will be populated with resolved parameters
+        "account_id": account_id,
+        "region": region,
+        "condition_values": condition_values or {}
+    }
+    
     # Substitute provided parameters with their defaults if not provided
     resolved_cfn_parameters = {}
     for param_key, param_def in template_parameters.items():
@@ -43,6 +125,9 @@ def parse_template_and_collect_actions(template_path, cfn_parameters, account_id
             resolved_cfn_parameters[param_key] = cfn_parameters[param_key]
         elif "Default" in param_def:
             resolved_cfn_parameters[param_key] = param_def["Default"]
+    
+    # Update context with resolved parameters
+    context["parameters"] = resolved_cfn_parameters
 
     # Check for required prerequisite parameters (example)
     if "OutpostRoleArn" in resolved_cfn_parameters:
@@ -57,6 +142,19 @@ def parse_template_and_collect_actions(template_path, cfn_parameters, account_id
     for logical_id, resource_def in resources.items():
         resource_type = resource_def.get("Type")
         properties = resource_def.get("Properties", {})
+        
+        # Check if resource has a Condition and evaluate it
+        if "Condition" in resource_def:
+            condition_name = resource_def["Condition"]
+            print(f"  Resource {logical_id} has condition: {condition_name}")
+            
+            # Evaluate the condition
+            condition_result = evaluate_condition(condition_name, context)
+            
+            # Skip resource if condition evaluates to false
+            if not condition_result:
+                print(f"  Skipping resource {logical_id} due to condition {condition_name} evaluating to false")
+                continue
 
         print(f"  Processing resource: {logical_id} (Type: {resource_type})")
 
@@ -248,6 +346,7 @@ def main():
     parser.add_argument("--region", required=True, help="AWS Region for deployment.")
     parser.add_argument("--parameters", nargs='*', help="CloudFormation parameters as Key=Value pairs.")
     parser.add_argument("--profile", help="AWS CLI profile to use.")
+    parser.add_argument("--condition-values", help="JSON string of condition name to boolean value mappings.")
 
     args = parser.parse_args()
 
@@ -281,9 +380,19 @@ def main():
             key, value = p_item.split("=", 1)
             cfn_cli_parameters[key] = value
     
+    # Parse condition values if provided
+    condition_values = None
+    if args.condition_values:
+        try:
+            condition_values = json.loads(args.condition_values)
+            print(f"Using provided condition values: {condition_values}")
+        except json.JSONDecodeError as e:
+            print(f"Error: Could not parse condition values JSON. {e}", file=sys.stderr)
+            sys.exit(1)
+    
     # Step 1: Parse Template & Collect Actions
     actions, resource_arns, prerequisite_checks = parse_template_and_collect_actions(
-        args.template_file, cfn_cli_parameters, account_id, args.region
+        args.template_file, cfn_cli_parameters, account_id, args.region, condition_values
     )
 
     # Step 2: Check Prerequisites

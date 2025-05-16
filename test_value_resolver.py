@@ -95,11 +95,55 @@ class TestResolveValue(unittest.TestCase):
         result = resolve_value(value, self.mock_parameters, self.account_id, self.region, self.mock_resources)
         self.assertEqual(result, f"{PSEUDO_PARAMETER_RESOLUTIONS['AWS::AccountId']}-prefix-DefaultValue")
 
-    def test_get_att(self):
-        """Test handling of GetAtt function"""
-        value = {"Fn::GetAtt": ["MyResource", "Arn"]}
+    def test_get_att_basic(self):
+        """Test basic handling of GetAtt function for unsupported resource types"""
+        value = {"Fn::GetAtt": ["UnsupportedResource", "Arn"]}
         result = resolve_value(value, self.mock_parameters, self.account_id, self.region, self.mock_resources)
-        self.assertEqual(result, "getatt:MyResource.Arn")
+        self.assertEqual(result, "getatt:UnsupportedResource.Arn")
+    
+    def test_get_att_iam_role(self):
+        """Test GetAtt for IAM Role Arn"""
+        # Add an IAM Role to mock resources
+        self.mock_resources["MyRole"] = {
+            "Type": "AWS::IAM::Role",
+            "Properties": {}
+        }
+        value = {"Fn::GetAtt": ["MyRole", "Arn"]}
+        result = resolve_value(value, self.mock_parameters, self.account_id, self.region, self.mock_resources)
+        self.assertEqual(result, f"arn:aws:iam::{self.account_id}:role/resolved-getatt-myrole-arn")
+    
+    def test_get_att_s3_bucket_domain_name(self):
+        """Test GetAtt for S3 Bucket DomainName"""
+        # Add an S3 Bucket to mock resources
+        self.mock_resources["MyBucket"] = {
+            "Type": "AWS::S3::Bucket",
+            "Properties": {}
+        }
+        value = {"Fn::GetAtt": ["MyBucket", "DomainName"]}
+        result = resolve_value(value, self.mock_parameters, self.account_id, self.region, self.mock_resources)
+        self.assertEqual(result, "resolved-getatt-mybucket-domainname.s3.amazonaws.com")
+    
+    def test_get_att_lambda_function_arn(self):
+        """Test GetAtt for Lambda Function Arn"""
+        # Add a Lambda Function to mock resources
+        self.mock_resources["MyFunction"] = {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {}
+        }
+        value = {"Fn::GetAtt": ["MyFunction", "Arn"]}
+        result = resolve_value(value, self.mock_parameters, self.account_id, self.region, self.mock_resources)
+        self.assertEqual(result, f"arn:aws:lambda:{self.region}:{self.account_id}:function:resolved-getatt-myfunction-arn")
+    
+    def test_get_att_sqs_queue_url(self):
+        """Test GetAtt for SQS Queue URL"""
+        # Add an SQS Queue to mock resources
+        self.mock_resources["MyQueue"] = {
+            "Type": "AWS::SQS::Queue",
+            "Properties": {}
+        }
+        value = {"Fn::GetAtt": ["MyQueue", "QueueUrl"]}
+        result = resolve_value(value, self.mock_parameters, self.account_id, self.region, self.mock_resources)
+        self.assertEqual(result, f"https://sqs.{self.region}.amazonaws.com/{self.account_id}/resolved-getatt-myqueue-queueurl")
 
     def test_aws_no_value(self):
         """Test handling of AWS::NoValue"""

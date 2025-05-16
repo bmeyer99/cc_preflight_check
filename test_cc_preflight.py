@@ -1,6 +1,6 @@
 import unittest
-from cc_preflight import resolve_value, PSEUDO_PARAMETER_RESOLUTIONS
-from cc_preflight import RESOURCE_ACTION_MAP
+from value_resolver import resolve_value, PSEUDO_PARAMETER_RESOLUTIONS
+from resource_map import RESOURCE_ACTION_MAP
 
 class TestResolveValue(unittest.TestCase):
 

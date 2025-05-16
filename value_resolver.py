@@ -72,9 +72,46 @@ def resolve_value(value, parameters, account_id, region, resources_in_template):
                 print(f"Warning: Fn::Sub list form or complex expressions not fully supported for pre-flight resolution: {sub_val}", file=sys.stderr)
                 return str(value)
         elif "Fn::GetAtt" in value:
-             # Pre-flight resolution of GetAtt is hard. Return a placeholder or logical ID.
-            print(f"Warning: Fn::GetAtt resolution not supported in pre-flight: {value}", file=sys.stderr)
-            return f"getatt:{value['Fn::GetAtt'][0]}.{value['Fn::GetAtt'][1]}"
+            # Enhanced GetAtt resolution with resource-specific ARN patterns
+            logical_id = value["Fn::GetAtt"][0]
+            attribute = value["Fn::GetAtt"][1]
+            
+            # Check if the resource exists in the template
+            if logical_id in resources_in_template:
+                resource_type = resources_in_template[logical_id].get("Type", "")
+                
+                # Handle different resource types with appropriate ARN formats
+                if resource_type == "AWS::IAM::Role" and attribute == "Arn":
+                    return f"arn:aws:iam::{account_id}:role/resolved-getatt-{logical_id.lower()}-{attribute.lower()}"
+                
+                elif resource_type == "AWS::S3::Bucket":
+                    if attribute == "DomainName":
+                        return f"resolved-getatt-{logical_id.lower()}-{attribute.lower()}.s3.amazonaws.com"
+                    elif attribute == "Arn":
+                        return f"arn:aws:s3:::resolved-getatt-{logical_id.lower()}-{attribute.lower()}"
+                
+                elif resource_type == "AWS::Lambda::Function":
+                    if attribute == "Arn":
+                        return f"arn:aws:lambda:{region}:{account_id}:function:resolved-getatt-{logical_id.lower()}-{attribute.lower()}"
+                
+                elif resource_type == "AWS::SQS::Queue":
+                    if attribute == "QueueUrl":
+                        return f"https://sqs.{region}.amazonaws.com/{account_id}/resolved-getatt-{logical_id.lower()}-{attribute.lower()}"
+                    elif attribute == "Arn":
+                        return f"arn:aws:sqs:{region}:{account_id}:resolved-getatt-{logical_id.lower()}-{attribute.lower()}"
+                
+                elif resource_type == "AWS::SNS::Topic" and attribute == "TopicArn":
+                    return f"arn:aws:sns:{region}:{account_id}:resolved-getatt-{logical_id.lower()}-{attribute.lower()}"
+                
+                elif resource_type == "AWS::KMS::Key" and attribute == "KeyId":
+                    return f"resolved-getatt-{logical_id.lower()}-{attribute.lower()}"
+                
+                elif resource_type == "AWS::CloudTrail::Trail" and attribute == "Arn":
+                    return f"arn:aws:cloudtrail:{region}:{account_id}:trail/resolved-getatt-{logical_id.lower()}-{attribute.lower()}"
+            
+            # For unsupported resource types or attributes, return a generic placeholder
+            print(f"Warning: Specific GetAtt resolution not available for {logical_id}.{attribute}. Using generic placeholder.", file=sys.stderr)
+            return f"getatt:{logical_id}.{attribute}"
         elif "Fn::Join" in value:
             delimiter = value["Fn::Join"][0]
             list_to_join = value["Fn::Join"][1]
