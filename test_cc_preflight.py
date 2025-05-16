@@ -1,10 +1,31 @@
+"""
+Unit tests for the CloudFormation pre-flight check tool.
+
+This module contains tests for the value resolution functionality and resource action mapping
+used by the CloudFormation pre-flight check tool. It verifies that:
+1. CloudFormation intrinsic functions (Ref, Fn::Sub, Fn::GetAtt, Fn::Join) are correctly resolved
+2. The resource action map has the correct structure and content
+"""
+
 import unittest
 from value_resolver import resolve_value, PSEUDO_PARAMETER_RESOLUTIONS
 from resource_map import RESOURCE_ACTION_MAP
 
 class TestResolveValue(unittest.TestCase):
+    """
+    Test case for the resolve_value function in value_resolver.py.
+    
+    These tests verify that CloudFormation intrinsic functions are correctly
+    resolved to their simplified values for pre-flight checks.
+    """
 
     def setUp(self):
+        """
+        Set up test fixtures for the resolve_value tests.
+        
+        Creates mock data for parameters, resources, account ID, region, and
+        pseudo-parameters that will be used across all tests.
+        """
         # Mock data for testing
         self.mock_parameters = {
             "ParamWithDefault": "DefaultValue",
@@ -246,8 +267,24 @@ class TestResolveValue(unittest.TestCase):
         result = resolve_value(value, self.mock_parameters, self.mock_account_id, self.mock_region, self.mock_resources)
         self.assertEqual(result, expected)
 class TestResourceActionMap(unittest.TestCase):
+    """
+    Test case for the RESOURCE_ACTION_MAP in resource_map.py.
+    
+    These tests verify that the resource action map has the correct structure
+    and contains the expected resource types and actions.
+    """
 
     def test_resource_action_map_structure(self):
+        """
+        Test that the RESOURCE_ACTION_MAP has the correct structure.
+        
+        Verifies that:
+        - The map is a dictionary
+        - Each resource entry is a dictionary
+        - The operation_actions field is a dictionary
+        - Each operation has a list of actions
+        - Each action is a string
+        """
         self.assertIsInstance(RESOURCE_ACTION_MAP, dict)
         for resource_type, resource_data in RESOURCE_ACTION_MAP.items():
             self.assertIsInstance(resource_data, dict, f"Value for {resource_type} is not a dictionary")
@@ -259,6 +296,12 @@ class TestResourceActionMap(unittest.TestCase):
                         self.assertIsInstance(action, str, f"Action in list for {resource_type} operation {operation} is not a string")
 
     def test_key_resource_types_present(self):
+        """
+        Test that key resource types are present in the RESOURCE_ACTION_MAP.
+        
+        Verifies that all expected resource types are included in the map.
+        This ensures that the map is complete and covers all required resource types.
+        """
         expected_resource_types = [
             "AWS::IAM::Role",
             "AWS::CloudFormation::StackSet",
@@ -279,6 +322,12 @@ class TestResourceActionMap(unittest.TestCase):
             self.assertIn(resource_type, RESOURCE_ACTION_MAP, f"Resource type {resource_type} not found in RESOURCE_ACTION_MAP")
 
     def test_key_operation_keys_present(self):
+        """
+        Test that key operation keys are present for important resource types.
+        
+        Verifies that all expected operations (Create, Update, Delete, Tag)
+        are defined for key resource types.
+        """
         resource_types_to_check = [
             "AWS::IAM::Role",
             "AWS::S3::Bucket",
@@ -294,6 +343,12 @@ class TestResourceActionMap(unittest.TestCase):
                 self.assertIn(operation, resource_data["operation_actions"], f"Operation {operation} not found for {resource_type}")
 
     def test_accurate_action_lists(self):
+        """
+        Test that specific action lists are accurate for key resource types and operations.
+        
+        This test verifies that the IAM actions required for specific operations
+        on specific resource types are correctly defined in the map.
+        """
         # Based on tasks/P1-T1.2-IdentifyIAMActions.md
         expected_mappings = {
             "AWS::IAM::Role": {

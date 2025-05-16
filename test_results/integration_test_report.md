@@ -449,3 +449,13 @@ Pre-flight checks identified issues. Review failures before deploying.
   ]
 }```
 
+## Cortex XDR CFT Tests
+
+For detailed results of the Cortex XDR CloudFormation template tests, please see the [Cortex XDR Integration Test Report](integration_test_report_cortex_xdr.md).
+
+The Cortex XDR tests verified that:
+1. The admin principal with sufficient permissions passes all pre-flight checks
+2. The limited principal with insufficient permissions fails the pre-flight checks
+3. The script correctly identifies the missing permissions in the limited principal scenario
+
+The tests confirmed that the `cc_preflight.py` script can successfully analyze complex CloudFormation templates like the Cortex XDR template and accurately determine the required permissions.

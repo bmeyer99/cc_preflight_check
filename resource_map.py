@@ -1,4 +1,41 @@
-RESOURCE_ACTION_MAP = {
+"""
+AWS CloudFormation Resource Action Map.
+
+This module defines a mapping between CloudFormation resource types and the IAM actions
+required to create, update, delete, and tag those resources. It also includes ARN patterns
+for constructing resource ARNs for IAM policy simulation.
+
+The RESOURCE_ACTION_MAP dictionary is the core data structure of this module, providing:
+1. Generic IAM actions required for each resource type
+2. ARN patterns for constructing resource ARNs
+3. Property-specific IAM actions for resource properties
+4. Operation-specific IAM actions (Create, Update, Delete, Tag)
+5. Special handling for custom resources
+
+This mapping is used by the cc_preflight.py module to determine which IAM permissions
+are required to deploy a CloudFormation template based on the resources it contains.
+"""
+
+from typing import Dict, List, Any
+
+# Map of CloudFormation resource types to their required IAM actions and ARN patterns
+RESOURCE_ACTION_MAP: Dict[str, Dict[str, Any]] = {
+    # The RESOURCE_ACTION_MAP dictionary has the following structure:
+    # {
+    #     "AWS::Service::ResourceType": {
+    #         "generic_actions": [list of IAM actions required for this resource type],
+    #         "arn_pattern": "ARN pattern with placeholders like {accountId}, {region}",
+    #         "property_actions": {
+    #             "PropertyName": [list of IAM actions required for this property]
+    #         },
+    #         "operation_actions": {
+    #             "Create": [list of IAM actions for creation],
+    #             "Update": [list of IAM actions for updates],
+    #             "Delete": [list of IAM actions for deletion],
+    #             "Tag": [list of IAM actions for tagging]
+    #         }
+    #     }
+    # }
     "AWS::IAM::Role": {
         "generic_actions": [
             "iam:CreateRole",
@@ -230,6 +267,7 @@ RESOURCE_ACTION_MAP = {
     # Custom resources are backed by Lambdas. Permissions are needed for the Lambda and its execution role.
     # The permissions for what the Lambda *does* are on its execution role.
     # The deploying principal needs to create the Lambda and its role.
+    # The "type": "CustomResource" flag indicates special handling in cc_preflight.py
     "Custom::PublishRoleDetail": {
         "type": "CustomResource",
         "operation_actions": {
