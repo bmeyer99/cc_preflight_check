@@ -1,0 +1,64 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Test CFT for S3 Bucket resource type.
+  This template tests the pre-flight check script's ability to:
+  1. Detect S3 bucket creation
+  2. Handle bucket policies
+  3. Process encryption configuration
+  4. Identify required S3 actions (s3:CreateBucket, s3:PutBucketPolicy, s3:PutEncryptionConfiguration)
+
+Resources:
+  TestS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'test-preflight-bucket-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldObjects
+            Status: Enabled
+            ExpirationInDays: 365
+      Tags:
+        - Key: Purpose
+          Value: Testing
+        - Key: Environment
+          Value: Development
+
+  TestBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref TestS3Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action:
+              - s3:GetObject
+            Resource: !Sub 'arn:aws:s3:::${TestS3Bucket}/*'
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !Sub 'arn:aws:s3:::${TestS3Bucket}'
+              - !Sub 'arn:aws:s3:::${TestS3Bucket}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+Outputs:
+  BucketName:
+    Description: Name of the created S3 Bucket
+    Value: !Ref TestS3Bucket
+  BucketArn:
+    Description: ARN of the created S3 Bucket
+    Value: !GetAtt TestS3Bucket.Arn
+  BucketDomainName:
+    Description: Domain name of the created S3 Bucket
+    Value: !GetAtt TestS3Bucket.DomainName

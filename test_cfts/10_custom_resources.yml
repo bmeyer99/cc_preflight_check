@@ -1,0 +1,187 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Test CFT for Custom Resources.
+  This template tests the pre-flight check script's ability to:
+  1. Detect custom resource types
+  2. Handle Lambda-backed custom resources
+  3. Process service token references
+  4. Identify required Lambda and IAM actions for custom resource handlers
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+    Description: Environment name
+
+Resources:
+  # Lambda execution role for custom resource
+  CustomResourceLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'custom-resource-lambda-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CustomResourcePermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::${BucketForCustomResource}/*'
+                  - !Sub 'arn:aws:s3:::${BucketForCustomResource}'
+      Tags:
+        - Key: Purpose
+          Value: CustomResource
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Lambda function that implements the custom resource
+  CustomResourceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'custom-resource-handler-${Environment}'
+      Handler: index.handler
+      Role: !GetAtt CustomResourceLambdaRole.Arn
+      Runtime: nodejs18.x
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const https = require('https');
+          const url = require('url');
+          
+          exports.handler = async (event, context) => {
+            console.log('Event:', JSON.stringify(event, null, 2));
+            
+            // Extract request parameters
+            const requestType = event.RequestType;
+            const resourceProperties = event.ResourceProperties;
+            const responseUrl = event.ResponseURL;
+            
+            let responseStatus = 'SUCCESS';
+            let responseData = {};
+            
+            try {
+              if (requestType === 'Create') {
+                // Implement create logic
+                responseData = { Message: 'Resource created successfully' };
+              } else if (requestType === 'Update') {
+                // Implement update logic
+                responseData = { Message: 'Resource updated successfully' };
+              } else if (requestType === 'Delete') {
+                // Implement delete logic
+                responseData = { Message: 'Resource deleted successfully' };
+              }
+            } catch (error) {
+              console.error('Error:', error);
+              responseStatus = 'FAILED';
+              responseData = { Error: error.message };
+            }
+            
+            // Send response to CloudFormation
+            await sendResponse(event, context, responseStatus, responseData);
+            return;
+          };
+          
+          // Helper function to send response to CloudFormation
+          async function sendResponse(event, context, responseStatus, responseData) {
+            const responseBody = JSON.stringify({
+              Status: responseStatus,
+              Reason: responseData.Error || 'See the details in CloudWatch Log Stream: ' + context.logStreamName,
+              PhysicalResourceId: event.PhysicalResourceId || context.logStreamName,
+              StackId: event.StackId,
+              RequestId: event.RequestId,
+              LogicalResourceId: event.LogicalResourceId,
+              Data: responseData,
+            });
+            
+            console.log('Response body:', responseBody);
+            
+            const parsedUrl = url.parse(event.ResponseURL);
+            const options = {
+              hostname: parsedUrl.hostname,
+              port: 443,
+              path: parsedUrl.path,
+              method: 'PUT',
+              headers: {
+                'Content-Type': '',
+                'Content-Length': responseBody.length,
+              },
+            };
+            
+            return new Promise((resolve, reject) => {
+              const request = https.request(options, (response) => {
+                console.log(`Status code: ${response.statusCode}`);
+                resolve();
+              });
+              
+              request.on('error', (error) => {
+                console.error('Send response error:', error);
+                reject(error);
+              });
+              
+              request.write(responseBody);
+              request.end();
+            });
+          }
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+      Tags:
+        - Key: Purpose
+          Value: CustomResource
+        - Key: Environment
+          Value: !Ref Environment
+
+  # S3 bucket that will be used by the custom resource
+  BucketForCustomResource:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'custom-resource-bucket-${AWS::AccountId}-${Environment}'
+      Tags:
+        - Key: Purpose
+          Value: CustomResource
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Custom resource that uses the Lambda function
+  EmptyBucketCustomResource:
+    Type: Custom::EmptyBucketDetails
+    Properties:
+      ServiceToken: !GetAtt CustomResourceFunction.Arn
+      BucketName: !Ref BucketForCustomResource
+      Environment: !Ref Environment
+
+  # Another custom resource with a different type
+  PublishRoleDetailsResource:
+    Type: Custom::PublishRoleDetail
+    Properties:
+      ServiceToken: !GetAtt CustomResourceFunction.Arn
+      RoleName: !Ref CustomResourceLambdaRole
+      Environment: !Ref Environment
+
+Outputs:
+  CustomResourceFunctionArn:
+    Description: ARN of the Lambda function implementing the custom resource
+    Value: !GetAtt CustomResourceFunction.Arn
+  BucketName:
+    Description: Name of the S3 bucket used by the custom resource
+    Value: !Ref BucketForCustomResource
+  CustomResourceResult:
+    Description: Result from the custom resource
+    Value: !GetAtt EmptyBucketCustomResource.Message

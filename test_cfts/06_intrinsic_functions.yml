@@ -1,0 +1,125 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Test CFT for CloudFormation intrinsic functions.
+  This template tests the pre-flight check script's ability to:
+  1. Resolve !Ref function (parameters, resources, pseudo parameters)
+  2. Resolve !Sub function (string and list forms)
+  3. Resolve !Join function
+  4. Resolve !GetAtt function
+  5. Handle nested intrinsic functions
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+    Description: Environment name
+  
+  BucketNamePrefix:
+    Type: String
+    Default: test-bucket
+    Description: Prefix for the S3 bucket name
+
+Resources:
+  # Test S3 bucket to demonstrate intrinsic functions
+  TestBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      # Test !Ref for parameter
+      # Test !Sub for string interpolation
+      BucketName: !Sub '${BucketNamePrefix}-${Environment}-${AWS::AccountId}'
+      Tags:
+        # Test !Ref for pseudo parameter
+        - Key: AccountId
+          Value: !Ref AWS::AccountId
+        # Test !Ref for parameter
+        - Key: Environment
+          Value: !Ref Environment
+        # Test !Join
+        - Key: StackInfo
+          Value: !Join 
+            - '-'
+            - - 'stack'
+              - !Ref AWS::StackName
+              - !Ref Environment
+
+  # IAM Role to test GetAtt
+  TestRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'test-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      # Test nested intrinsic functions
+      Tags:
+        - Key: RoleArn
+          # Test !GetAtt
+          Value: !GetAtt TestRole.Arn
+        - Key: BucketArn
+          # Test !GetAtt
+          Value: !GetAtt TestBucket.Arn
+        - Key: NestedFunctions
+          # Test nested !Join and !Sub
+          Value: !Join
+            - ':'
+            - - 'bucket'
+              - !Sub '${BucketNamePrefix}-${Environment}'
+              - !Ref AWS::Region
+
+  # Lambda function to test complex intrinsic function usage
+  TestFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'test-function-${Environment}'
+      Handler: index.handler
+      Role: !GetAtt TestRole.Arn
+      Runtime: nodejs18.x
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            return { statusCode: 200, body: 'Hello World' };
+          };
+      Environment:
+        Variables:
+          # Test !Sub with list form
+          BUCKET_ARN: !Sub
+            - 'arn:aws:s3:::${BucketName}'
+            - { BucketName: !Ref TestBucket }
+          # Test !Join with !Ref and !GetAtt
+          ROLE_INFO: !Join
+            - '|'
+            - - !Ref TestRole
+              - !GetAtt TestRole.Arn
+              - !Ref AWS::Region
+
+Outputs:
+  BucketName:
+    Description: Name of the created S3 Bucket
+    Value: !Ref TestBucket
+  BucketArn:
+    Description: ARN of the created S3 Bucket
+    Value: !GetAtt TestBucket.Arn
+  RoleArn:
+    Description: ARN of the created IAM Role
+    Value: !GetAtt TestRole.Arn
+  FunctionArn:
+    Description: ARN of the created Lambda Function
+    Value: !GetAtt TestFunction.Arn
+  # Test complex output with multiple intrinsic functions
+  ResourceSummary:
+    Description: Summary of created resources
+    Value: !Join
+      - ' | '
+      - - !Sub 'Bucket: ${TestBucket}'
+        - !Sub 'Role: ${TestRole}'
+        - !Sub 'Function: ${TestFunction}'
+        - !Sub 'Region: ${AWS::Region}'

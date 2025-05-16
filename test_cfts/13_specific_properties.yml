@@ -1,0 +1,183 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Test CFT for Properties Requiring Specific Actions.
+  This template tests the pre-flight check script's ability to:
+  1. Detect properties that require specific IAM actions
+  2. Handle cross-service permissions
+  3. Process resource configurations that need special handling
+  4. Identify required actions based on property values
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+    Description: Environment name
+
+Resources:
+  # S3 bucket with specific properties
+  S3BucketWithSpecificProps:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'specific-props-bucket-${AWS::AccountId}-${Environment}'
+      # Requires s3:PutBucketAcl
+      AccessControl: PublicReadWrite
+      # Requires s3:PutBucketCORS
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - '*'
+            AllowedMethods:
+              - GET
+              - PUT
+              - POST
+            AllowedOrigins:
+              - '*'
+            MaxAge: 3600
+      # Requires s3:PutBucketNotification
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Event: s3:ObjectCreated:*
+            Topic: !Ref NotificationTopic
+      # Requires s3:PutBucketWebsite
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # SNS topic for S3 notifications
+  NotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub 'bucket-notification-topic-${Environment}'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Lambda function with specific properties
+  LambdaWithSpecificProps:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'specific-props-function-${Environment}'
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: nodejs18.x
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            return { statusCode: 200, body: 'Hello from Lambda!' };
+          };
+      # Requires lambda:PutFunctionConcurrency
+      ReservedConcurrentExecutions: 5
+      # Requires lambda:PutFunctionEventInvokeConfig
+      FunctionUrlConfig:
+        AuthType: NONE
+        Cors:
+          AllowOrigins:
+            - '*'
+      # Requires lambda:TagResource
+      Tags:
+        Environment: !Ref Environment
+
+  # Lambda execution role
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'specific-props-lambda-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      # Requires iam:PutRolePermissionsBoundary
+      PermissionsBoundary: arn:aws:iam::aws:policy/AdministratorAccess
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # SQS queue with specific properties
+  SQSQueueWithSpecificProps:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'specific-props-queue-${Environment}'
+      # Requires sqs:SetQueueAttributes
+      DelaySeconds: 5
+      # Requires sqs:SetQueueAttributes
+      VisibilityTimeout: 60
+      # Requires sqs:SetQueueAttributes
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 5
+      # Requires sqs:TagQueue
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Dead letter queue for SQS
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'specific-props-dlq-${Environment}'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # KMS key with specific properties
+  KMSKeyWithSpecificProps:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: KMS key with specific properties
+      # Requires kms:EnableKeyRotation
+      EnableKeyRotation: true
+      # Requires kms:PutKeyPolicy
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: key-policy-1
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: kms:*
+            Resource: '*'
+          - Sid: Allow use of the key
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt LambdaExecutionRole.Arn
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: '*'
+      # Requires kms:TagResource
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  BucketName:
+    Description: Name of the S3 bucket with specific properties
+    Value: !Ref S3BucketWithSpecificProps
+  BucketWebsiteURL:
+    Description: URL of the S3 bucket website
+    Value: !GetAtt S3BucketWithSpecificProps.WebsiteURL
+  FunctionArn:
+    Description: ARN of the Lambda function with specific properties
+    Value: !GetAtt LambdaWithSpecificProps.Arn
+  QueueURL:
+    Description: URL of the SQS queue with specific properties
+    Value: !Ref SQSQueueWithSpecificProps
+  KeyId:
+    Description: ID of the KMS key with specific properties
+    Value: !Ref KMSKeyWithSpecificProps

@@ -1,0 +1,83 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Test CFT for SQS and SNS resource types.
+  This template tests the pre-flight check script's ability to:
+  1. Detect SQS queue and SNS topic creation
+  2. Handle queue and topic policies
+  3. Process SNS subscriptions
+  4. Identify required SQS and SNS actions
+
+Resources:
+  TestSQSQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: test-preflight-queue
+      DelaySeconds: 5
+      MessageRetentionPeriod: 345600  # 4 days
+      VisibilityTimeout: 30
+      Tags:
+        - Key: Purpose
+          Value: Testing
+        - Key: Environment
+          Value: Development
+
+  TestSQSQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref TestSQSQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt TestSQSQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref TestSNSTopic
+
+  TestSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: test-preflight-topic
+      DisplayName: Test Preflight Topic
+      Tags:
+        - Key: Purpose
+          Value: Testing
+        - Key: Environment
+          Value: Development
+
+  TestSNSTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref TestSNSTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: sns:Publish
+            Resource: !Ref TestSNSTopic
+
+  TestSNSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref TestSNSTopic
+      Protocol: sqs
+      Endpoint: !GetAtt TestSQSQueue.Arn
+      RawMessageDelivery: true
+
+Outputs:
+  QueueURL:
+    Description: URL of the created SQS Queue
+    Value: !Ref TestSQSQueue
+  QueueARN:
+    Description: ARN of the created SQS Queue
+    Value: !GetAtt TestSQSQueue.Arn
+  TopicARN:
+    Description: ARN of the created SNS Topic
+    Value: !Ref TestSNSTopic

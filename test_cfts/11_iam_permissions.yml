@@ -1,0 +1,162 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Test CFT for IAM Permission Scenarios.
+  This template tests the pre-flight check script's ability to:
+  1. Detect complex IAM policy structures
+  2. Handle policy conditions and context keys
+  3. Process resource-based policies
+  4. Identify required IAM actions for policy creation and attachment
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+    Description: Environment name
+
+Resources:
+  # IAM role with complex permissions
+  ComplexPermissionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'complex-permissions-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Path: /
+      # Inline policies with complex conditions
+      Policies:
+        - PolicyName: ComplexS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AllowS3ListWithConditions
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource: !Sub 'arn:aws:s3:::${S3BucketWithPolicy}'
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - 'public/*'
+                      - 'logs/*'
+              - Sid: AllowS3ReadWithConditions
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub 'arn:aws:s3:::${S3BucketWithPolicy}/*'
+                Condition:
+                  StringEquals:
+                    s3:ResourceTag/Environment: !Ref Environment
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/test-table'
+                Condition:
+                  ForAllValues:StringEquals:
+                    dynamodb:LeadingKeys:
+                      - !Sub 'user-${Environment}'
+      # Managed policy attachments
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # S3 bucket with resource-based policy
+  S3BucketWithPolicy:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'complex-policy-bucket-${AWS::AccountId}-${Environment}'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Bucket policy with complex conditions
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3BucketWithPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowRoleAccess
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt ComplexPermissionsRole.Arn
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+            Resource: !Sub '${S3BucketWithPolicy.Arn}/*'
+            Condition:
+              StringEquals:
+                aws:PrincipalTag/Environment: !Ref Environment
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !Sub '${S3BucketWithPolicy.Arn}'
+              - !Sub '${S3BucketWithPolicy.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  # IAM policy with resource-specific permissions
+  ResourceSpecificPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub 'resource-specific-policy-${Environment}'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+            Condition:
+              StringEquals:
+                kms:ViaService: !Sub 's3.${AWS::Region}.amazonaws.com'
+          - Effect: Allow
+            Action:
+              - kms:CreateGrant
+              - kms:ListGrants
+              - kms:RevokeGrant
+            Resource: !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+            Condition:
+              Bool:
+                kms:GrantIsForAWSResource: true
+      Roles:
+        - !Ref ComplexPermissionsRole
+
+Outputs:
+  RoleArn:
+    Description: ARN of the IAM role with complex permissions
+    Value: !GetAtt ComplexPermissionsRole.Arn
+  BucketName:
+    Description: Name of the S3 bucket with resource-based policy
+    Value: !Ref S3BucketWithPolicy
+  PolicyName:
+    Description: Name of the IAM policy with resource-specific permissions
+    Value: !Ref ResourceSpecificPolicy

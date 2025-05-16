@@ -1,0 +1,130 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Test CFT for CloudFormation StackSet resource type.
+  This template tests the pre-flight check script's ability to:
+  1. Detect CloudFormation StackSet creation
+  2. Handle StackSet execution role references
+  3. Process StackSet administration role references
+  4. Identify required CloudFormation and IAM actions
+
+Parameters:
+  StackSetName:
+    Type: String
+    Default: test-preflight-stackset
+    Description: Name for the CloudFormation StackSet
+  
+  PermissionModel:
+    Type: String
+    Default: SELF_MANAGED
+    AllowedValues:
+      - SELF_MANAGED
+      - SERVICE_MANAGED
+    Description: Permission model for the StackSet
+
+Resources:
+  # IAM role for StackSet administration (SELF_MANAGED model)
+  StackSetAdminRole:
+    Type: AWS::IAM::Role
+    Condition: IsSelfManaged
+    Properties:
+      RoleName: AWSCloudFormationStackSetAdministrationRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+      Tags:
+        - Key: Purpose
+          Value: CloudFormation StackSet Administration
+
+  # IAM role for StackSet execution in target accounts (SELF_MANAGED model)
+  StackSetExecutionRole:
+    Type: AWS::IAM::Role
+    Condition: IsSelfManaged
+    Properties:
+      RoleName: AWSCloudFormationStackSetExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+      Tags:
+        - Key: Purpose
+          Value: CloudFormation StackSet Execution
+
+  # CloudFormation StackSet
+  TestStackSet:
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      StackSetName: !Ref StackSetName
+      Description: Test StackSet for pre-flight checks
+      PermissionModel: !Ref PermissionModel
+      # Only specify administration role for SELF_MANAGED model
+      AdministrationRoleARN: !If 
+        - IsSelfManaged
+        - !GetAtt StackSetAdminRole.Arn
+        - !Ref AWS::NoValue
+      # Only specify execution role name for SELF_MANAGED model
+      ExecutionRoleName: !If
+        - IsSelfManaged
+        - AWSCloudFormationStackSetExecutionRole
+        - !Ref AWS::NoValue
+      # Simple template for the StackSet instances
+      TemplateBody: |
+        AWSTemplateFormatVersion: '2010-09-09'
+        Description: Simple template for StackSet instances
+        Resources:
+          TestBucket:
+            Type: AWS::S3::Bucket
+            Properties:
+              BucketName: !Sub 'stackset-test-bucket-${AWS::AccountId}'
+              Tags:
+                - Key: Purpose
+                  Value: StackSet Testing
+        Outputs:
+          BucketName:
+            Description: Name of the created S3 Bucket
+            Value: !Ref TestBucket
+      # Deployment targets
+      DeploymentTargets:
+        Accounts:
+          - !Ref AWS::AccountId
+      Regions:
+        - !Ref AWS::Region
+      OperationPreferences:
+        FailureTolerancePercentage: 0
+        MaxConcurrentPercentage: 100
+      Tags:
+        - Key: Purpose
+          Value: Testing
+        - Key: Environment
+          Value: Development
+
+Conditions:
+  IsSelfManaged: !Equals [!Ref PermissionModel, 'SELF_MANAGED']
+
+Outputs:
+  StackSetId:
+    Description: ID of the created CloudFormation StackSet
+    Value: !Ref TestStackSet
+  StackSetName:
+    Description: Name of the created CloudFormation StackSet
+    Value: !Ref StackSetName
+  AdminRoleArn:
+    Description: ARN of the StackSet administration role
+    Condition: IsSelfManaged
+    Value: !GetAtt StackSetAdminRole.Arn
+  ExecutionRoleName:
+    Description: Name of the StackSet execution role
+    Condition: IsSelfManaged
+    Value: !Ref StackSetExecutionRole

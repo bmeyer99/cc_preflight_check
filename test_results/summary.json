@@ -1,0 +1,22 @@
+{
+  "total_tests": 6,
+  "passed_tests": 6,
+  "failed_tests": 0,
+  "test_details": [
+    {
+      "cft_name": "01_iam_role",
+      "sufficient_test_passed": true,
+      "insufficient_test_passed": true
+    },
+    {
+      "cft_name": "02_s3_bucket",
+      "sufficient_test_passed": true,
+      "insufficient_test_passed": true
+    },
+    {
+      "cft_name": "03_lambda_function",
+      "sufficient_test_passed": true,
+      "insufficient_test_passed": true
+    }
+  ]
+}

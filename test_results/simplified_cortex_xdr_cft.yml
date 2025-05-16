@@ -1,0 +1,265 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Simplified Cortex XDR Cloud Role Template for Testing
+Parameters:
+  OrganizationalUnitId:
+    Type: String
+    Description: 'Provide the organizational root OU ID (Prefix like: r-) if you want to run it for all the accounts under this Organization.'
+    AllowedPattern: ^(r-)[a-z0-9-]+$
+    Default: r-abcd1234
+  ExternalID:
+    Type: String
+    Description: 'Provide an ExternalID (Example: 20e96a18-34ff-493d-b10a-0a8c2a22792a)'
+    MinLength: '1'
+    AllowedPattern: '[a-zA-Z0-9\=\,\.\@\:\/\-_]*'
+    ConstraintDescription: 'ExternalID must contain alphanumeric characters and only these special characters are allowed =,.@:/-. '
+    Default: d5e1e7e8-58c1-430d-8326-65c5a0d8171c
+  OutpostRoleArn:
+    Type: String
+    Description: Assume Role Principal
+    Default: arn:aws:iam::650251731026:role/gcp_saas_role
+  CortexPlatformRoleName:
+    Type: String
+    Description: 'Provide an role ARN name (Example: CortexPlatformRole)'
+    AllowedPattern: '[-_a-zA-Z0-9]+'
+    Default: CortexPlatformRole-m-o-1008133351020
+  Audience:
+    Type: String
+    Description: Audience for federated principal
+    Default: cortex-audit-logs
+    NoEcho: true
+  CollectorServiceAccountId:
+    Type: String
+    Description: Unique ID of the service account used by AWS collector
+    Default: '105121694051112508627'
+    NoEcho: true
+  OutpostAccountId:
+    Type: String
+    Description: Outpost Account Id
+    Default: '650251731026'
+    NoEcho: true
+  MTKmsAccount:
+    Type: String
+    Description: MT Kms Account
+    Default: '047719626164'
+    NoEcho: true
+  CortexPlatformScannerRoleName:
+    Type: String
+    Description: Cortex Cloud Scanners Cloud Role
+    Default: CortexPlatformScannerRole
+    NoEcho: true
+
+Resources:
+  CortexPlatformRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref 'CortexPlatformRoleName'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonMemoryDBReadOnlyAccess
+        - arn:aws:iam::aws:policy/SecurityAudit
+        - arn:aws:iam::aws:policy/AmazonSQSReadOnlyAccess
+        - arn:aws:iam::aws:policy/AWSOrganizationsReadOnlyAccess
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+                - !Sub '${OutpostRoleArn}'
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref 'ExternalID'
+          - Effect: Allow
+            Principal:
+              Service: export.rds.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: Cortex-Agentless-Policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ModifySnapshotAttribute
+                Effect: Allow
+                Action:
+                  - ec2:ModifySnapshotAttribute
+                Resource: !Join
+                  - ''
+                  - - 'arn:'
+                    - !Ref 'AWS::Partition'
+                    - :ec2:*::snapshot/*
+                Condition:
+                  StringEquals:
+                    ec2:Add/userId: !Sub '${OutpostAccountId}'
+                    ec2:ResourceTag/managed_by: paloaltonetworks
+      Tags:
+        - Key: managed_by
+          Value: paloaltonetworks
+
+  CloudTrailKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: KMS key for CloudTrail logs encryption
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: kms:*
+            Resource: '*'
+          - Sid: Allow CloudTrail to Encrypt Logs
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action:
+              - kms:GenerateDataKey
+              - kms:Encrypt
+            Resource: '*'
+      Tags:
+        - Key: managed_by
+          Value: paloaltonetworks
+
+  CloudTrailLogsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'cortex-cloudtrail-logs-${AWS::AccountId}-m-o-1008133351020'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref 'CloudTrailKMSKey'
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldLogs
+            Status: Enabled
+            ExpirationInDays: 7
+            Prefix: ''
+      Tags:
+        - Key: managed_by
+          Value: paloaltonetworks
+
+  CloudTrailLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref 'CloudTrailLogsBucket'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudTrailWrite1
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub 'arn:aws:s3:::${CloudTrailLogsBucket}/*'
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+
+  CloudTrailLogsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'cortex-cloudtrail-logs-queue-${AWS::AccountId}-m-o-1008133351020'
+      Tags:
+        - Key: managed_by
+          Value: paloaltonetworks
+
+  CloudTrailSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub 'cortex-cloudtrail-logs-notification-${AWS::AccountId}-m-o-1008133351020'
+      Tags:
+        - Key: managed_by
+          Value: paloaltonetworks
+
+  CloudTrail:
+    Type: AWS::CloudTrail::Trail
+    Properties:
+      TrailName: !Sub 'cortex-trail-${AWS::AccountId}-m-o-1008133351020'
+      S3BucketName: !Ref 'CloudTrailLogsBucket'
+      KMSKeyId: !Ref 'CloudTrailKMSKey'
+      IsLogging: true
+      IsMultiRegionTrail: true
+      IncludeGlobalServiceEvents: true
+      IsOrganizationTrail: false
+      EventSelectors:
+        - ReadWriteType: All
+          IncludeManagementEvents: true
+      SnsTopicName: !Ref 'CloudTrailSNSTopic'
+      Tags:
+        - Key: managed_by
+          Value: paloaltonetworks
+
+  CortexTemplateCustomLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSOrganizationsReadOnlyAccess
+      Tags:
+        - Key: managed_by
+          Value: paloaltonetworks
+
+  CortexTemplateCustomLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt 'CortexTemplateCustomLambdaExecutionRole.Arn'
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              return {'Status': 'Success'}
+      Runtime: python3.12
+      Timeout: 75
+      Tags:
+        - Key: managed_by
+          Value: paloaltonetworks
+
+  CortexPlatformScannerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${CortexPlatformScannerRoleName}-m-o-1008133351020'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonMemoryDBReadOnlyAccess
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+                - arn:aws:iam::650251731026:role/scanner_of_serverless
+                - arn:aws:iam::650251731026:role/registry_scanner
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Sub '${ExternalID}'
+      Policies:
+        - PolicyName: LAMBDAAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: LAMBDAAccessSid
+                Action:
+                  - lambda:GetFunction
+                  - lambda:GetFunctionConfiguration
+                  - lambda:GetLayerVersion
+                  - iam:GetRole
+                Resource: '*'
+                Effect: Allow
+      Tags:
+        - Key: managed_by
+          Value: paloaltonetworks
+
+Outputs:
+  CORTEXXDRARN:
+    Value: !GetAtt 'CortexPlatformRole.Arn'
+    Description: Role ARN to configure within Cortex Platform Account Setup

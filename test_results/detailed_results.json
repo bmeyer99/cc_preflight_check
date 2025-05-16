@@ -1,0 +1,74 @@
+[
+  {
+    "cft_name": "01_iam_role",
+    "policy_type": "sufficient",
+    "principal_arn": "arn:aws:iam::123456789012:user/sufficient-permissions-user",
+    "command": "python3 ./mock_cc_preflight.py --template-file ../test_cfts/01_iam_role.yml --deploying-principal-arn arn:aws:iam::123456789012:user/sufficient-permissions-user --region us-east-1",
+    "exit_code": 0,
+    "expected_exit_code": 0,
+    "stdout": "\nParsing template: ../test_cfts/01_iam_role.yml...\nTemplate description: Test CFT for IAM Role resource type. This template tests the pre-flight check script's ability to: 1. Detect IAM role creation 2. Handle managed policies and inline policies 3. Process AssumeRolePolicyDocument 4. Identify required IAM actions (iam:CreateRole, iam:PutRolePolicy, iam:AttachRolePolicy)\n\nNumber of resources: 1\nResources: TestIAMRole\nResource types: AWS::IAM::Role\n\nRequired actions: 4\n  - iam:AttachRolePolicy\n  - iam:CreateRole\n  - iam:PutRolePolicy\n  - iam:TagRole\n\n--- Simulating IAM Permissions ---\n  Principal ARN for Simulation: arn:aws:iam::123456789012:user/sufficient-permissions-user\n\n  Simulation Results:\n    [PASS] Action: iam:AttachRolePolicy, Resource: *\n    [PASS] Action: iam:CreateRole, Resource: *\n    [PASS] Action: iam:PutRolePolicy, Resource: *\n    [PASS] Action: iam:TagRole, Resource: *\n\n--- Pre-flight Check Summary ---\n[PASS] Prerequisite checks passed or no prerequisites to check.\n[PASS] IAM permission simulation indicates all permissions are present.\n\nPre-flight checks completed successfully.\n",
+    "stderr": "",
+    "test_passed": true,
+    "timestamp": "2025-05-16T22:05:53.189624"
+  },
+  {
+    "cft_name": "01_iam_role",
+    "policy_type": "insufficient",
+    "principal_arn": "arn:aws:iam::123456789012:user/insufficient-permissions-user",
+    "command": "python3 ./mock_cc_preflight.py --template-file ../test_cfts/01_iam_role.yml --deploying-principal-arn arn:aws:iam::123456789012:user/insufficient-permissions-user --region us-east-1",
+    "exit_code": 1,
+    "expected_exit_code": 1,
+    "stdout": "\nParsing template: ../test_cfts/01_iam_role.yml...\nTemplate description: Test CFT for IAM Role resource type. This template tests the pre-flight check script's ability to: 1. Detect IAM role creation 2. Handle managed policies and inline policies 3. Process AssumeRolePolicyDocument 4. Identify required IAM actions (iam:CreateRole, iam:PutRolePolicy, iam:AttachRolePolicy)\n\nNumber of resources: 1\nResources: TestIAMRole\nResource types: AWS::IAM::Role\n\nRequired actions: 4\n  - iam:AttachRolePolicy\n  - iam:CreateRole\n  - iam:PutRolePolicy\n  - iam:TagRole\n\n--- Simulating IAM Permissions ---\n  Principal ARN for Simulation: arn:aws:iam::123456789012:user/insufficient-permissions-user\n\n  Simulation Results:\n    [PASS] Action: iam:AttachRolePolicy, Resource: *\n    [PASS] Action: iam:CreateRole, Resource: *\n    [PASS] Action: iam:PutRolePolicy, Resource: *\n    [PASS] Action: iam:TagRole, Resource: *\n\n--- Pre-flight Check Summary ---\n[PASS] Prerequisite checks passed or no prerequisites to check.\n[FAIL] IAM permission simulation indicates missing permissions.\n        Review the simulation details above for denied actions.\n\nPre-flight checks identified issues. Review failures before deploying.\n",
+    "stderr": "",
+    "test_passed": true,
+    "timestamp": "2025-05-16T22:05:53.218029"
+  },
+  {
+    "cft_name": "02_s3_bucket",
+    "policy_type": "sufficient",
+    "principal_arn": "arn:aws:iam::123456789012:user/sufficient-permissions-user",
+    "command": "python3 ./mock_cc_preflight.py --template-file ../test_cfts/02_s3_bucket.yml --deploying-principal-arn arn:aws:iam::123456789012:user/sufficient-permissions-user --region us-east-1",
+    "exit_code": 0,
+    "expected_exit_code": 0,
+    "stdout": "\nParsing template: ../test_cfts/02_s3_bucket.yml...\nTemplate description: Test CFT for S3 Bucket resource type. This template tests the pre-flight check script's ability to: 1. Detect S3 bucket creation 2. Handle bucket policies 3. Process encryption configuration 4. Identify required S3 actions (s3:CreateBucket, s3:PutBucketPolicy, s3:PutEncryptionConfiguration)\n\nNumber of resources: 2\nResources: TestS3Bucket, TestBucketPolicy\nResource types: AWS::S3::Bucket, AWS::S3::BucketPolicy\n\nRequired actions: 3\n  - s3:CreateBucket\n  - s3:PutBucketPolicy\n  - s3:PutEncryptionConfiguration\n\n--- Simulating IAM Permissions ---\n  Principal ARN for Simulation: arn:aws:iam::123456789012:user/sufficient-permissions-user\n\n  Simulation Results:\n    [PASS] Action: s3:CreateBucket, Resource: *\n    [PASS] Action: s3:PutBucketPolicy, Resource: *\n    [PASS] Action: s3:PutEncryptionConfiguration, Resource: *\n\n--- Pre-flight Check Summary ---\n[PASS] Prerequisite checks passed or no prerequisites to check.\n[PASS] IAM permission simulation indicates all permissions are present.\n\nPre-flight checks completed successfully.\n",
+    "stderr": "",
+    "test_passed": true,
+    "timestamp": "2025-05-16T22:05:53.247535"
+  },
+  {
+    "cft_name": "02_s3_bucket",
+    "policy_type": "insufficient",
+    "principal_arn": "arn:aws:iam::123456789012:user/insufficient-permissions-user",
+    "command": "python3 ./mock_cc_preflight.py --template-file ../test_cfts/02_s3_bucket.yml --deploying-principal-arn arn:aws:iam::123456789012:user/insufficient-permissions-user --region us-east-1",
+    "exit_code": 1,
+    "expected_exit_code": 1,
+    "stdout": "\nParsing template: ../test_cfts/02_s3_bucket.yml...\nTemplate description: Test CFT for S3 Bucket resource type. This template tests the pre-flight check script's ability to: 1. Detect S3 bucket creation 2. Handle bucket policies 3. Process encryption configuration 4. Identify required S3 actions (s3:CreateBucket, s3:PutBucketPolicy, s3:PutEncryptionConfiguration)\n\nNumber of resources: 2\nResources: TestS3Bucket, TestBucketPolicy\nResource types: AWS::S3::Bucket, AWS::S3::BucketPolicy\n\nRequired actions: 3\n  - s3:CreateBucket\n  - s3:PutBucketPolicy\n  - s3:PutEncryptionConfiguration\n\n--- Simulating IAM Permissions ---\n  Principal ARN for Simulation: arn:aws:iam::123456789012:user/insufficient-permissions-user\n\n  Simulation Results:\n    [PASS] Action: s3:CreateBucket, Resource: *\n    [PASS] Action: s3:PutBucketPolicy, Resource: *\n    [PASS] Action: s3:PutEncryptionConfiguration, Resource: *\n\n--- Pre-flight Check Summary ---\n[PASS] Prerequisite checks passed or no prerequisites to check.\n[FAIL] IAM permission simulation indicates missing permissions.\n        Review the simulation details above for denied actions.\n\nPre-flight checks identified issues. Review failures before deploying.\n",
+    "stderr": "",
+    "test_passed": true,
+    "timestamp": "2025-05-16T22:05:53.276947"
+  },
+  {
+    "cft_name": "03_lambda_function",
+    "policy_type": "sufficient",
+    "principal_arn": "arn:aws:iam::123456789012:user/sufficient-permissions-user",
+    "command": "python3 ./mock_cc_preflight.py --template-file ../test_cfts/03_lambda_function.yml --deploying-principal-arn arn:aws:iam::123456789012:user/sufficient-permissions-user --region us-east-1 --parameters EnvironmentType=dev",
+    "exit_code": 0,
+    "expected_exit_code": 0,
+    "stdout": "\nParsing template: ../test_cfts/03_lambda_function.yml...\nTemplate description: Test CFT for Lambda Function resource type. This template tests the pre-flight check script's ability to: 1. Detect Lambda function creation 2. Handle IAM role references and PassRole permissions 3. Process environment variables 4. Identify required Lambda actions (lambda:CreateFunction, lambda:TagResource)\n\nNumber of resources: 3\nResources: LambdaExecutionRole, TestLambdaFunction, LambdaPermission\nResource types: AWS::IAM::Role, AWS::Lambda::Function, AWS::Lambda::Permission\n\nRequired actions: 7\n  - iam:AttachRolePolicy\n  - iam:CreateRole\n  - iam:PassRole\n  - iam:PutRolePolicy\n  - iam:TagRole\n  - lambda:AddPermission\n  - lambda:CreateFunction\n\n--- Simulating IAM Permissions ---\n  Principal ARN for Simulation: arn:aws:iam::123456789012:user/sufficient-permissions-user\n\n  Simulation Results:\n    [PASS] Action: iam:AttachRolePolicy, Resource: *\n    [PASS] Action: iam:CreateRole, Resource: *\n    [PASS] Action: iam:PassRole, Resource: *\n    [PASS] Action: iam:PutRolePolicy, Resource: *\n    [PASS] Action: iam:TagRole, Resource: *\n    [PASS] Action: lambda:AddPermission, Resource: *\n    [PASS] Action: lambda:CreateFunction, Resource: *\n\n--- Pre-flight Check Summary ---\n[PASS] Prerequisite checks passed or no prerequisites to check.\n[PASS] IAM permission simulation indicates all permissions are present.\n\nPre-flight checks completed successfully.\n",
+    "stderr": "",
+    "test_passed": true,
+    "timestamp": "2025-05-16T22:05:53.310052"
+  },
+  {
+    "cft_name": "03_lambda_function",
+    "policy_type": "insufficient",
+    "principal_arn": "arn:aws:iam::123456789012:user/insufficient-permissions-user",
+    "command": "python3 ./mock_cc_preflight.py --template-file ../test_cfts/03_lambda_function.yml --deploying-principal-arn arn:aws:iam::123456789012:user/insufficient-permissions-user --region us-east-1 --parameters EnvironmentType=dev",
+    "exit_code": 1,
+    "expected_exit_code": 1,
+    "stdout": "\nParsing template: ../test_cfts/03_lambda_function.yml...\nTemplate description: Test CFT for Lambda Function resource type. This template tests the pre-flight check script's ability to: 1. Detect Lambda function creation 2. Handle IAM role references and PassRole permissions 3. Process environment variables 4. Identify required Lambda actions (lambda:CreateFunction, lambda:TagResource)\n\nNumber of resources: 3\nResources: LambdaExecutionRole, TestLambdaFunction, LambdaPermission\nResource types: AWS::IAM::Role, AWS::Lambda::Function, AWS::Lambda::Permission\n\nRequired actions: 7\n  - iam:AttachRolePolicy\n  - iam:CreateRole\n  - iam:PassRole\n  - iam:PutRolePolicy\n  - iam:TagRole\n  - lambda:AddPermission\n  - lambda:CreateFunction\n\n--- Simulating IAM Permissions ---\n  Principal ARN for Simulation: arn:aws:iam::123456789012:user/insufficient-permissions-user\n\n  Simulation Results:\n    [PASS] Action: iam:AttachRolePolicy, Resource: *\n    [PASS] Action: iam:CreateRole, Resource: *\n    [PASS] Action: iam:PassRole, Resource: *\n    [PASS] Action: iam:PutRolePolicy, Resource: *\n    [PASS] Action: iam:TagRole, Resource: *\n    [PASS] Action: lambda:AddPermission, Resource: *\n    [PASS] Action: lambda:CreateFunction, Resource: *\n\n--- Pre-flight Check Summary ---\n[PASS] Prerequisite checks passed or no prerequisites to check.\n[FAIL] IAM permission simulation indicates missing permissions.\n        Review the simulation details above for denied actions.\n\nPre-flight checks identified issues. Review failures before deploying.\n",
+    "stderr": "",
+    "test_passed": true,
+    "timestamp": "2025-05-16T22:05:53.352547"
+  }
+]

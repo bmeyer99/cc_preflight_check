@@ -1,0 +1,59 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Test CFT for KMS Key resource type.
+  This template tests the pre-flight check script's ability to:
+  1. Detect KMS key creation
+  2. Handle key policies
+  3. Process key aliases
+  4. Identify required KMS actions (kms:CreateKey, kms:PutKeyPolicy, kms:CreateAlias)
+
+Resources:
+  TestKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Test KMS Key for pre-flight checks
+      Enabled: true
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: key-policy-1
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: kms:*
+            Resource: '*'
+          - Sid: Allow use of the key
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:role/TestRole'
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: '*'
+      Tags:
+        - Key: Purpose
+          Value: Testing
+        - Key: Environment
+          Value: Development
+
+  TestKMSAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/test-preflight-key
+      TargetKeyId: !Ref TestKMSKey
+
+Outputs:
+  KeyId:
+    Description: ID of the created KMS Key
+    Value: !Ref TestKMSKey
+  KeyArn:
+    Description: ARN of the created KMS Key
+    Value: !GetAtt TestKMSKey.Arn
+  KeyAlias:
+    Description: Alias of the created KMS Key
+    Value: !Ref TestKMSAlias

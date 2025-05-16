@@ -1,0 +1,163 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Test CFT for CloudFormation Conditions.
+  This template tests the pre-flight check script's ability to:
+  1. Parse the Conditions block
+  2. Evaluate condition expressions (Fn::Equals)
+  3. Skip resources with false conditions
+  4. Handle conditional resource creation
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+    Description: Environment name
+  
+  CreateProdResources:
+    Type: String
+    Default: false
+    AllowedValues:
+      - true
+      - false
+    Description: Whether to create production-only resources
+
+  EnableEncryption:
+    Type: String
+    Default: true
+    AllowedValues:
+      - true
+      - false
+    Description: Whether to enable encryption for resources
+
+Conditions:
+  # Simple condition based on parameter value
+  IsProd:
+    !Equals [!Ref Environment, 'prod']
+  
+  # Condition based on another parameter
+  ShouldCreateProdResources:
+    !Equals [!Ref CreateProdResources, 'true']
+  
+  # Condition based on another parameter
+  IsEncryptionEnabled:
+    !Equals [!Ref EnableEncryption, 'true']
+  
+  # Compound condition using And
+  CreateProdResourcesInProd:
+    !And
+      - !Condition IsProd
+      - !Condition ShouldCreateProdResources
+
+  # Compound condition using Or
+  CreateDevOrTestResources:
+    !Or
+      - !Equals [!Ref Environment, 'dev']
+      - !Equals [!Ref Environment, 'test']
+
+  # Compound condition using Not
+  IsNotProd:
+    !Not [!Condition IsProd]
+
+Resources:
+  # Base bucket that's always created
+  BaseBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'base-bucket-${AWS::AccountId}-${Environment}'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Bucket only created in prod environment
+  ProdOnlyBucket:
+    Type: AWS::S3::Bucket
+    Condition: IsProd
+    Properties:
+      BucketName: !Sub 'prod-only-bucket-${AWS::AccountId}'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Bucket only created when encryption is enabled
+  EncryptedBucket:
+    Type: AWS::S3::Bucket
+    Condition: IsEncryptionEnabled
+    Properties:
+      BucketName: !Sub 'encrypted-bucket-${AWS::AccountId}-${Environment}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Encrypted
+          Value: 'true'
+
+  # Role only created for dev or test environments
+  DevTestRole:
+    Type: AWS::IAM::Role
+    Condition: CreateDevOrTestResources
+    Properties:
+      RoleName: !Sub 'devtest-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # KMS key only created for prod resources when explicitly enabled
+  ProdKMSKey:
+    Type: AWS::KMS::Key
+    Condition: CreateProdResourcesInProd
+    Properties:
+      Description: KMS Key for production resources
+      Enabled: true
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: key-policy-1
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: kms:*
+            Resource: '*'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  BaseBucketName:
+    Description: Name of the base bucket
+    Value: !Ref BaseBucket
+  
+  ProdOnlyBucketName:
+    Description: Name of the prod-only bucket
+    Condition: IsProd
+    Value: !Ref ProdOnlyBucket
+  
+  EncryptedBucketName:
+    Description: Name of the encrypted bucket
+    Condition: IsEncryptionEnabled
+    Value: !Ref EncryptedBucket
+  
+  DevTestRoleName:
+    Description: Name of the dev/test role
+    Condition: CreateDevOrTestResources
+    Value: !Ref DevTestRole
+  
+  ProdKMSKeyId:
+    Description: ID of the prod KMS key
+    Condition: CreateProdResourcesInProd
+    Value: !Ref ProdKMSKey

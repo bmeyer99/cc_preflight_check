@@ -1,0 +1,45 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Test CFT for IAM Role resource type.
+  This template tests the pre-flight check script's ability to:
+  1. Detect IAM role creation
+  2. Handle managed policies and inline policies
+  3. Process AssumeRolePolicyDocument
+  4. Identify required IAM actions (iam:CreateRole, iam:PutRolePolicy, iam:AttachRolePolicy)
+
+Resources:
+  TestIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: TestPreflight-Role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: TestInlinePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - arn:aws:s3:::test-bucket
+                  - arn:aws:s3:::test-bucket/*
+      Tags:
+        - Key: Purpose
+          Value: Testing
+        - Key: Environment
+          Value: Development
+
+Outputs:
+  RoleArn:
+    Description: ARN of the created IAM Role
+    Value: !GetAtt TestIAMRole.Arn

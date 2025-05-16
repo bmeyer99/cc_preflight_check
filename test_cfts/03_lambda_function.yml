@@ -1,0 +1,85 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Test CFT for Lambda Function resource type.
+  This template tests the pre-flight check script's ability to:
+  1. Detect Lambda function creation
+  2. Handle IAM role references and PassRole permissions
+  3. Process environment variables
+  4. Identify required Lambda actions (lambda:CreateFunction, lambda:TagResource)
+
+Parameters:
+  EnvironmentType:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+    Description: The environment type for this Lambda function
+
+Resources:
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: LambdaS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub 'arn:aws:s3:::test-bucket-${AWS::AccountId}/*'
+
+  TestLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'test-preflight-function-${EnvironmentType}'
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: nodejs18.x
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            console.log('Event:', JSON.stringify(event, null, 2));
+            return {
+              statusCode: 200,
+              body: JSON.stringify({ message: 'Hello from Lambda!' }),
+            };
+          };
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref EnvironmentType
+          BUCKET_NAME: !Sub 'test-bucket-${AWS::AccountId}'
+          ACCOUNT_ID: !Ref AWS::AccountId
+      Tags:
+        - Key: Purpose
+          Value: Testing
+        - Key: Environment
+          Value: !Ref EnvironmentType
+
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref TestLambdaFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub 'arn:aws:s3:::test-bucket-${AWS::AccountId}'
+
+Outputs:
+  LambdaFunctionArn:
+    Description: ARN of the created Lambda Function
+    Value: !GetAtt TestLambdaFunction.Arn
+  LambdaRoleArn:
+    Description: ARN of the Lambda execution role
+    Value: !GetAtt LambdaExecutionRole.Arn

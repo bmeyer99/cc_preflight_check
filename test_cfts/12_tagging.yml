@@ -1,0 +1,194 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Test CFT for Resource Tagging.
+  This template tests the pre-flight check script's ability to:
+  1. Detect resource tagging across different resource types
+  2. Handle tag propagation
+  3. Process tag-specific permissions
+  4. Identify required tagging actions for different services
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+    Description: Environment name
+  
+  CostCenter:
+    Type: String
+    Default: engineering
+    Description: Cost center for resource allocation
+
+  Project:
+    Type: String
+    Default: preflight-testing
+    Description: Project name for resource grouping
+
+Resources:
+  # S3 bucket with tags
+  TaggedS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'tagged-bucket-${AWS::AccountId}-${Environment}'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: CostCenter
+          Value: !Ref CostCenter
+        - Key: Project
+          Value: !Ref Project
+        - Key: CreatedBy
+          Value: CloudFormation
+        - Key: LastModified
+          Value: !Ref AWS::StackName
+
+  # IAM role with tags
+  TaggedIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'tagged-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: CostCenter
+          Value: !Ref CostCenter
+        - Key: Project
+          Value: !Ref Project
+        - Key: CreatedBy
+          Value: CloudFormation
+        - Key: LastModified
+          Value: !Ref AWS::StackName
+
+  # Lambda function with tags
+  TaggedLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'tagged-function-${Environment}'
+      Handler: index.handler
+      Role: !GetAtt TaggedIAMRole.Arn
+      Runtime: nodejs18.x
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            return { statusCode: 200, body: 'Hello from Lambda!' };
+          };
+      Tags:
+        Environment: !Ref Environment
+        CostCenter: !Ref CostCenter
+        Project: !Ref Project
+        CreatedBy: CloudFormation
+        LastModified: !Ref AWS::StackName
+
+  # SQS queue with tags
+  TaggedSQSQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'tagged-queue-${Environment}'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: CostCenter
+          Value: !Ref CostCenter
+        - Key: Project
+          Value: !Ref Project
+        - Key: CreatedBy
+          Value: CloudFormation
+        - Key: LastModified
+          Value: !Ref AWS::StackName
+
+  # SNS topic with tags
+  TaggedSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub 'tagged-topic-${Environment}'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: CostCenter
+          Value: !Ref CostCenter
+        - Key: Project
+          Value: !Ref Project
+        - Key: CreatedBy
+          Value: CloudFormation
+        - Key: LastModified
+          Value: !Ref AWS::StackName
+
+  # KMS key with tags
+  TaggedKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: KMS key with tags
+      Enabled: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: key-policy-1
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: kms:*
+            Resource: '*'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: CostCenter
+          Value: !Ref CostCenter
+        - Key: Project
+          Value: !Ref Project
+        - Key: CreatedBy
+          Value: CloudFormation
+        - Key: LastModified
+          Value: !Ref AWS::StackName
+
+  # CloudTrail with tags
+  TaggedCloudTrail:
+    Type: AWS::CloudTrail::Trail
+    Properties:
+      TrailName: !Sub 'tagged-trail-${Environment}'
+      S3BucketName: !Ref TaggedS3Bucket
+      IsLogging: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: CostCenter
+          Value: !Ref CostCenter
+        - Key: Project
+          Value: !Ref Project
+        - Key: CreatedBy
+          Value: CloudFormation
+        - Key: LastModified
+          Value: !Ref AWS::StackName
+
+Outputs:
+  BucketName:
+    Description: Name of the tagged S3 bucket
+    Value: !Ref TaggedS3Bucket
+  RoleArn:
+    Description: ARN of the tagged IAM role
+    Value: !GetAtt TaggedIAMRole.Arn
+  FunctionArn:
+    Description: ARN of the tagged Lambda function
+    Value: !GetAtt TaggedLambdaFunction.Arn
+  QueueUrl:
+    Description: URL of the tagged SQS queue
+    Value: !Ref TaggedSQSQueue
+  TopicArn:
+    Description: ARN of the tagged SNS topic
+    Value: !Ref TaggedSNSTopic
+  KeyId:
+    Description: ID of the tagged KMS key
+    Value: !Ref TaggedKMSKey
+  TrailArn:
+    Description: ARN of the tagged CloudTrail
+    Value: !GetAtt TaggedCloudTrail.Arn

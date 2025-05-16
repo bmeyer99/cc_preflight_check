@@ -1,0 +1,128 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Test CFT for CloudTrail resource type.
+  This template tests the pre-flight check script's ability to:
+  1. Detect CloudTrail trail creation
+  2. Handle S3 bucket references for trail logs
+  3. Process KMS key references for encryption
+  4. Identify required CloudTrail and cross-service actions
+
+Parameters:
+  TrailName:
+    Type: String
+    Default: test-preflight-trail
+    Description: Name for the CloudTrail trail
+
+Resources:
+  # S3 bucket for CloudTrail logs
+  TrailLogBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'cloudtrail-logs-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: Purpose
+          Value: CloudTrail Logs
+        - Key: Environment
+          Value: Testing
+
+  # Bucket policy to allow CloudTrail to write logs
+  TrailLogBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref TrailLogBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AWSCloudTrailAclCheck
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt TrailLogBucket.Arn
+          - Sid: AWSCloudTrailWrite
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${TrailLogBucket.Arn}/AWSLogs/${AWS::AccountId}/*'
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+
+  # KMS key for encrypting CloudTrail logs
+  TrailEncryptionKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: KMS key for CloudTrail log encryption
+      Enabled: true
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: key-policy-cloudtrail
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: kms:*
+            Resource: '*'
+          - Sid: Allow CloudTrail to encrypt logs
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action:
+              - kms:GenerateDataKey*
+              - kms:Decrypt
+            Resource: '*'
+      Tags:
+        - Key: Purpose
+          Value: CloudTrail Encryption
+        - Key: Environment
+          Value: Testing
+
+  # CloudTrail trail
+  TestTrail:
+    Type: AWS::CloudTrail::Trail
+    DependsOn:
+      - TrailLogBucketPolicy
+    Properties:
+      TrailName: !Ref TrailName
+      S3BucketName: !Ref TrailLogBucket
+      S3KeyPrefix: AWSLogs
+      EnableLogFileValidation: true
+      IncludeGlobalServiceEvents: true
+      IsLogging: true
+      IsMultiRegionTrail: true
+      KMSKeyId: !Ref TrailEncryptionKey
+      EventSelectors:
+        - ReadWriteType: All
+          IncludeManagementEvents: true
+          DataResources:
+            - Type: AWS::S3::Object
+              Values:
+                - !Sub 'arn:aws:s3:::'
+      Tags:
+        - Key: Purpose
+          Value: Security Monitoring
+        - Key: Environment
+          Value: Testing
+
+Outputs:
+  TrailName:
+    Description: Name of the created CloudTrail trail
+    Value: !Ref TestTrail
+  TrailArn:
+    Description: ARN of the created CloudTrail trail
+    Value: !GetAtt TestTrail.Arn
+  LogBucketName:
+    Description: Name of the S3 bucket for CloudTrail logs
+    Value: !Ref TrailLogBucket
+  KMSKeyId:
+    Description: ID of the KMS key for CloudTrail log encryption
+    Value: !Ref TrailEncryptionKey
