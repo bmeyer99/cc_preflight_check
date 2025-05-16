@@ -1,69 +1,113 @@
 # AWS CloudFormation Pre-flight Check Script for Cortex XDR Template
 
+**README Version:** 2.0
+**Based on Script Version:** (Corresponds to the Python script generated on May 16, 2025)
+**Current Date:** May 16, 2025
+
 ## 1. Overview
 
-This Python script (`cfn_preflight_check.py`) is designed to perform **pre-flight checks** *before* deploying the Cortex XDR AWS CloudFormation template (referred to as `connectors_aws_cf-d33f925f6195475daf212fdc8b1919e2-1747407759.yml`, hereafter "the Cfn template"). Its primary purpose is to identify potential IAM permission issues and missing prerequisites, thereby reducing CloudFormation stack deployment failures.
+This Python script (`cfn_preflight_check.py`) serves as a **pre-flight check mechanism** designed to be executed *before* deploying the Cortex XDR AWS CloudFormation template (specifically, the template like `connectors_aws_cf-d33f925f6195475daf212fdc8b1919e2-1747407759.yml`, hereafter "the Cfn template"). Its core function is to proactively identify potential IAM permission insufficiencies and missing prerequisite resources. By doing so, it aims to significantly reduce the likelihood of CloudFormation stack deployment failures, leading to smoother and more predictable infrastructure provisioning.
 
-The script analyzes the Cfn template, attempts to determine the necessary IAM permissions for creating the defined resources, and then simulates whether a specified IAM principal (the one that would deploy the stack) possesses these permissions. It also checks for the existence of key prerequisite resources defined as parameters in the Cfn template.
+The script **dynamically analyzes** the provided Cfn template to understand what AWS resources it intends to create or modify. It then simulates whether a specified IAM principal (the one designated to deploy the Cfn stack) possesses the necessary permissions for these operations.
 
-**Current Date of Generation:** May 16, 2025
-
-**Important Note:** This script provides a foundational framework. While it aims to be as comprehensive as possible for the provided Cfn template, accurately simulating all IAM permissions for complex CloudFormation templates is a highly involved task. Consider this script a powerful starting point that can be iteratively improved.
+**Important Note:** This script provides a foundational framework. While it strives for comprehensive analysis of the provided Cfn template, accurately simulating all IAM permissions for highly complex CloudFormation templates is an inherently involved task. This script should be viewed as a powerful starting point that can be iteratively enhanced and adapted.
 
 ## 2. Purpose
 
-The main goals of this pre-flight check script are:
+The primary objectives of this pre-flight check script are:
 
-1.  **Permission Verification:** To simulate and verify that the IAM user/role intending to deploy the CloudFormation stack possesses the required permissions to create and configure all the AWS resources defined within the template.
-2.  **Prerequisite Validation:** To check for the existence and correct configuration of any external AWS resources that the CloudFormation template relies upon (e.g., an existing IAM role referenced in the `OutpostRoleArn` parameter that will be part of a trust policy).
-3.  **Reduce Deployment Failures:** By identifying potential permission issues or missing prerequisites beforehand, this script aims to reduce the likelihood of CloudFormation stack deployment failures.
+1.  **Permission Verification:** To simulate and verify that the IAM user/role intending to deploy the CloudFormation stack (the "deploying principal") possesses the required permissions to create, configure, and manage all AWS resources defined within the Cfn template.
+2.  **Prerequisite Validation:** To check for the existence and correct configuration of any external AWS resources that the CloudFormation template explicitly depends upon through its parameters (e.g., an existing IAM role specified in the `OutpostRoleArn` parameter).
+3.  **Reduce Deployment Failures:** By proactively identifying potential permission gaps or prerequisite issues, this script aims to minimize unexpected errors during the actual CloudFormation stack deployment process.
 
-## 3. How the Script Works
+## 3. How the Script Works (The Dynamic Analysis Process)
 
-The script executes the following main steps:
+The script's operation is dynamic, meaning its checks are directly driven by the content of the CloudFormation template you provide. Here's a step-by-step breakdown:
 
-1.  **Argument Parsing:** Accepts command-line arguments such as the path to the Cfn template, the ARN of the IAM principal that will deploy the stack, the target AWS region, and any Cfn template parameters.
-2.  **AWS Session Initialization:** Sets up a Boto3 session using provided AWS CLI profile (if any) and region.
-3.  **Account ID Retrieval:** Fetches the AWS Account ID of the current context using STS.
-4.  **Parameter Resolution:** Combines CLI-provided parameters with default values from the Cfn template.
-5.  **Template Parsing (`parse_template_and_collect_actions`):**
-    * Loads and parses the specified CloudFormation YAML template.
-    * Iterates through each resource defined in the `Resources` section.
-    * For each resource, it consults the `RESOURCE_ACTION_MAP` (a core dictionary within the script) to find:
-        * A list of generic IAM actions typically required for that resource type.
-        * An ARN pattern used for the simulation.
-        * Specific actions triggered by certain resource properties (e.g., `iam:PassRole` for a Lambda's `Role` property).
-    * It attempts to resolve simple CloudFormation intrinsic functions (`!Ref` to parameters/globals, basic `!Sub`) to make ARNs and resource names more specific for simulation.
-    * Collects a unique set of IAM actions and a set of potential resource ARNs for the simulation.
-    * Identifies prerequisite checks based on template parameters (e.g., the role specified in `OutpostRoleArn`).
-6.  **Prerequisite Checks (`check_prerequisites`):**
-    * Validates the existence of identified prerequisite resources (currently, checks if the IAM role for `OutpostRoleArn` exists).
-7.  **IAM Permission Simulation (`simulate_iam_permissions`):**
-    * Uses the AWS IAM `simulate_principal_policy` API call.
-    * This API call checks if the `--deploying-principal-arn` is allowed to perform the collected `actions` on the collected `resource_arns`.
-    * It can also take `ContextEntries` (e.g., for `sts:ExternalId`) to make the simulation more accurate if policies rely on context keys.
-    * Reports which actions are allowed and which are denied.
-8.  **Summary Reporting:** Provides a summary of whether prerequisite and permission checks passed or failed.
+1.  **Argument Parsing & Initialization:**
+    * Accepts command-line arguments: path to the Cfn template, ARN of the deploying IAM principal, target AWS region, and Cfn template parameters.
+    * Initializes a Boto3 AWS session (using your local AWS CLI credentials/profile or instance profile) and required AWS clients (IAM, STS).
+    * Retrieves the AWS Account ID of the context in which the script is running.
+
+2.  **Parameter Resolution:**
+    * Combines template parameter values passed via the command line with default values specified within the Cfn template itself. This resolved set of parameters is used for subsequent steps.
+
+3.  **CloudFormation Template Analysis (`parse_template_and_collect_actions` function):**
+    * **Loads and Parses:** Reads and parses the specified CloudFormation YAML template.
+    * **Resource Identification:** Iterates through each resource definition in the `Resources` section of the template.
+    * **IAM Action Mapping:** For each identified resource, it consults an internal dictionary (`RESOURCE_ACTION_MAP`). This map is crucial and contains:
+        * `generic_actions`: A list of common IAM actions (e.g., `iam:CreateRole`, `s3:CreateBucket`) typically required for that AWS resource type.
+        * `arn_pattern`: A template string for constructing a resource ARN pattern, used in the IAM simulation. This pattern often includes placeholders like `{accountId}`, `{region}`, and a resource name placeholder.
+        * `property_actions`: A sub-dictionary mapping specific CloudFormation resource property names (e.g., `ManagedPolicyArns` for an `AWS::IAM::Role`) to the additional IAM actions they trigger (e.g., `iam:AttachRolePolicy`).
+    * **Intrinsic Function Resolution (Basic):** Attempts to resolve simple CloudFormation intrinsic functions within resource properties:
+        * `!Ref` to `AWS::AccountId`, `AWS::Region`, and template parameters.
+        * Basic `!Sub` string substitutions using these resolved values.
+        * Basic `!Join` operations.
+        This resolution helps in making the predicted resource names and ARNs (used in simulation) more specific.
+    * **Action & ARN Collection:** Aggregates a unique set of all identified IAM actions and a set of predicted resource ARN patterns that the deploying principal would need to interact with.
+    * **Prerequisite Identification:** Notes any prerequisite checks required based on resolved template parameters (e.g., the role specified in `OutpostRoleArn`).
+
+4.  **Prerequisite Resource Checks (`check_prerequisites` function):**
+    * Validates the existence (and potentially basic configuration) of the identified prerequisite resources. For instance, it verifies that the IAM role specified by the `OutpostRoleArn` parameter exists.
+
+5.  **IAM Permission Simulation (`simulate_iam_permissions` function):**
+    * This is the core permission check. It uses the AWS IAM `simulate_principal_policy` API.
+    * It queries whether the IAM principal specified by the `--deploying-principal-arn` argument is **allowed** to perform the **collected IAM actions** on the **predicted resource ARN patterns**.
+    * `ContextEntries` can be supplied to the simulation (e.g., for `sts:ExternalId` if provided as a parameter) to make the simulation more accurate if the deploying principal's IAM policies or Service Control Policies (SCPs) rely on specific IAM condition context keys.
+    * The script then reports which actions are allowed and, more importantly, which are denied.
+
+6.  **Summary Reporting:**
+    * Provides a consolidated summary indicating whether all prerequisite checks passed and whether all simulated IAM permissions were granted.
 
 ## 4. Requirements
 
-* **Python 3.x:** (e.g., Python 3.8+)
+* **Python 3.x:** Recommended Python 3.8 or newer.
 * **Boto3 and PyYAML Libraries:**
     ```bash
     pip install boto3 pyyaml
     ```
-* **AWS Credentials for Running the Script:**
-    * The IAM entity (user or role) running *this pre-flight check script* must have permissions to:
-        * `iam:SimulatePrincipalPolicy` (or `iam:SimulateCustomPolicy`).
-        * `sts:GetCallerIdentity`.
-        * Permissions to describe any prerequisite resources being checked (e.g., `iam:GetRole` to verify the role specified in the `OutpostRoleArn` parameter).
-* **CloudFormation Template File:** The Cortex XDR CloudFormation YAML file (`connectors_aws_cf-d33f925f6195475daf212fdc8b1919e2-1747407759.yml`) must be accessible by the script.
-* **Deploying Principal ARN:** You must provide the ARN of the IAM user or role that *will actually be used to deploy the CloudFormation stack*. The script simulates permissions for this principal.
+* **AWS Credentials for Script Execution:**
+    * The IAM identity (user or role) that *runs this pre-flight check script* (i.e., your local AWS CLI configured identity or role) needs permissions for:
+        * `iam:SimulatePrincipalPolicy` (essential for the permission checks).
+        * `sts:GetCallerIdentity` (to determine the AWS account ID for ARN construction).
+        * Permissions to describe any prerequisite resources defined in the template and checked by the script (e.g., `iam:GetRole` to verify the role specified in the `OutpostRoleArn` parameter).
+* **CloudFormation Template File:** The target Cortex XDR CloudFormation YAML file (e.g., `connectors_aws_cf-d33f925f6195475daf212fdc8b1919e2-1747407759.yml`) must be accessible by the script.
+* **Deploying Principal ARN:** You **must** provide the ARN of the IAM user or role that *will actually be used to execute the CloudFormation stack deployment*. The script simulates permissions *for this specified principal*.
 
-## 5. How to Run
+## 5. Script Parameters and Justification
+
+The script uses several command-line arguments. Understanding why each is needed is key to effective use:
+
+* `--template-file` (Required)
+    * **Why:** This is the primary input. The script needs to read and parse this file to understand *what* AWS resources (IAM roles, S3 buckets, etc.) the CloudFormation template intends to create or modify. Without it, the script cannot determine what permissions to check.
+
+* `--deploying-principal-arn` (Required)
+    * **Why:** This specifies *whose* permissions the script should simulate. This is the ARN of the IAM user or role that you plan to use when running `aws cloudformation create-stack` (or update-stack).
+    * **Distinction from Script Execution Credentials:** The IAM identity running *this Python script* might be different from the identity deploying the Cfn stack. For example:
+        * A security team member (with broader permissions like `iam:SimulatePrincipalPolicy`) might run this script to audit the permissions of a dedicated, less-privileged CloudFormation deployment role.
+        * In CI/CD pipelines, the role running the check script might be different from the role deploying the infrastructure.
+        This separation allows for flexible permission auditing and adherence to the principle of least privilege.
+
+* `--region` (Required)
+    * **Why:** Many AWS resource ARNs are region-specific (e.g., `arn:aws:lambda:us-east-1:...`). The script needs the target deployment region to:
+        * Construct more accurate potential ARNs for resources that will be created.
+        * Ensure Boto3 clients target the correct regional AWS service endpoints for any API calls (like prerequisite checks).
+
+* `--parameters "Key1=Value1" "Key2=Value2" ...` (Optional, but often necessary)
+    * **Why:** These are the parameters you would pass to the CloudFormation stack during its creation or update. The script needs them because:
+        * **Prerequisite Identification:** Some parameters (like `OutpostRoleArn` in the Cfn template) point to existing AWS resources. The script uses the provided parameter value to know which specific prerequisite to check.
+        * **Resource Naming & Configuration:** Other parameters (e.g., `CortexPlatformRoleName`, `ExternalID`) influence the names, ARNs, or configurations (like IAM Role trust policies or inline policy conditions) of the resources CloudFormation will create. Providing these helps the script:
+            * Construct more specific (less wildcarded) ARNs for the IAM simulation.
+            * Supply relevant `ContextEntries` (like `sts:ExternalId`) to the IAM simulation if these parameters are used in IAM policy condition keys.
+        * **Accuracy of Analysis:** Without these parameters, the script would have to rely solely on default values from the template (if present) or make broader guesses, potentially reducing the accuracy of the pre-flight check.
+
+* `--profile` (Optional)
+    * **Why:** If you use named profiles in your AWS CLI configuration, this allows you to specify which profile's credentials the script should use for its own AWS API calls (like `iam:SimulatePrincipalPolicy` and `sts:GetCallerIdentity`).
+
+## 6. How to Run
 
 1.  **Save the Script:** Save the Python code as `cfn_preflight_check.py`.
-2.  **Ensure Prerequisites:** Install Python and the required libraries. Configure AWS credentials for the entity that will *run the script*.
+2.  **Ensure Requirements:** Install Python, `boto3`, and `pyyaml`. Configure AWS credentials for the IAM entity that will *run this script* (ensure it has the necessary permissions listed in Section 4).
 3.  **Execute from Terminal:**
 
     ```bash
@@ -79,101 +123,99 @@ The script executes the following main steps:
     ```
 
     **Replace placeholders:**
-    * `./connectors_aws_cf-...yml`: Adjust path if needed.
-    * `YOUR_DEPLOYING_ACCOUNT_ID:role/YourCfnDeploymentRole`: Use the actual ARN of the principal that will deploy the Cfn stack.
-    * `us-east-1`: Set your target AWS region.
-    * Adjust `--parameters` as necessary. Provide values for parameters that:
-        * Point to prerequisite resources.
-        * Influence resource names or critical configurations.
-        * Do not have defaults in the template and are required.
+    * `./connectors_aws_cf-...yml`: Adjust the path to your Cfn template file if it's different.
+    * `YOUR_DEPLOYING_ACCOUNT_ID:role/YourCfnDeploymentRole`: Use the **actual ARN** of the principal that will deploy the Cfn stack.
+    * `us-east-1`: Set your target AWS deployment region.
+    * Adjust other `--parameters` values as necessary to match your intended Cfn stack deployment.
 
-## 6. Key Script Sections & How to Extend
+## 7. Key Script Sections & How to Extend
 
-This script is designed to be extensible. Here are the key areas for understanding and enhancement:
+This script is designed for extensibility. Understanding its core components is key to enhancing its capabilities:
 
 * **`RESOURCE_ACTION_MAP` (Global Dictionary):**
-    * **This is the most critical part for accuracy.** It maps CloudFormation resource types (e.g., `AWS::IAM::Role`) to:
-        * `generic_actions`: A list of common IAM actions for creating/managing that resource.
-        * `arn_pattern`: A string pattern for constructing a resource ARN for simulation. Placeholders like `{accountId}`, `{region}`, `{roleName}` are used.
-        * `property_actions`: A dictionary mapping resource property names (e.g., `ManagedPolicyArns` for an IAM Role) to additional IAM actions they trigger.
-        * `pass_role_to_services`: (Example, can be expanded) For services that require `iam:PassRole`.
-    * **To Extend:**
-        * For any new resource type or an existing one with missing actions, add/update its entry in this map.
-        * Consult the AWS documentation for the specific service to find the exact IAM permissions needed for each CloudFormation property.
-        * Pay close attention to actions like `iam:PassRole`, tagging actions (e.g., `s3:PutBucketTagging` vs. `iam:TagRole`), and policy-setting actions.
+    * **The Engine of Permission Mapping.** This dictionary is the most critical component for the script's accuracy regarding IAM checks.
+    * **Structure:** Maps CloudFormation resource types (e.g., `AWS::IAM::Role`) to:
+        * `generic_actions`: A list of common IAM actions (e.g., `iam:CreateRole`) for that resource.
+        * `arn_pattern`: A template string for constructing resource ARN patterns for simulation. Uses placeholders like `{accountId}`, `{region}`, `{roleName}`.
+        * `property_actions`: A sub-dictionary. Maps specific CloudFormation resource *property names* (e.g., `ManagedPolicyArns` for an `AWS::IAM::Role`) to the *additional IAM actions* those properties trigger (e.g., `iam:AttachRolePolicy`).
+    * **How to Extend:**
+        1.  **Identify Missing Resources/Actions:** If the script reports "Warning: No specific IAM action mapping found..." for a resource type in your template, or if a deployment fails due to a permission not checked by the script, that's a cue to update this map.
+        2.  **Consult AWS Documentation:** For the specific AWS service and resource type (e.g., "IAM permissions for creating S3 buckets with CloudFormation"), find the precise IAM actions required for each CloudFormation property you use.
+        3.  **Update `generic_actions`:** Add general create/delete/tag actions.
+        4.  **Define/Refine `arn_pattern`:** Make it as specific as possible while still being usable for pre-flight (non-existent) resources.
+        5.  **Populate `property_actions`:** This is key for detailed accuracy. If setting `BucketEncryption` on an `AWS::S3::Bucket` requires `s3:PutEncryptionConfiguration`, add that mapping. Pay special attention to `iam:PassRole` permissions if roles are being passed to services (e.g., a Lambda function's `Role` property).
 
 * **`resolve_value()` (Function):**
-    * Handles basic CloudFormation intrinsic function resolution:
-        * `Ref` to `AWS::AccountId`, `AWS::Region`, and template parameters.
-        * Basic `Fn::Sub` string substitutions for the above.
-        * Basic `Fn::Join`.
-    * **To Extend:**
-        * Add support for `Ref` to other resources within the template (requires careful handling of how ARNs are predicted).
-        * Enhance `Fn::Sub` to support its list form and more complex variable substitutions.
-        * Implement `Fn::GetAtt` (challenging for pre-flight, as attributes of non-existent resources are unknown; might return placeholders).
-        * Add support for other intrinsic functions (`!ImportValue`, `!Select`, etc.) if present in your templates.
+    * Handles basic CloudFormation intrinsic function resolution (`!Ref` to parameters/globals, basic `!Sub`, basic `!Join`).
+    * **How to Extend:**
+        * Improve `!Ref` to handle references to other logical resources *within the template*. This is complex as it requires predicting the ARN or relevant identifier of a not-yet-created resource.
+        * Enhance `!Sub` to fully support its list form (`Fn::Sub: [String, { Var1Name: Var1Value, ... }]`) and more complex variable substitutions.
+        * Implement `!GetAtt` (highly challenging for pre-flight, as attributes of non-existent resources are unknown; might involve returning placeholders or making educated guesses based on resource type).
+        * Add support for other intrinsic functions (`!ImportValue`, `!Select`, `!Split`, etc.) if your templates use them extensively and they influence permissions or ARNs.
 
 * **`parse_template_and_collect_actions()` (Function):**
-    * This function iterates through resources in the Cfn template.
-    * **Resource Naming for ARN Patterns:** It attempts to derive resource names from properties like `RoleName`, `BucketName`, etc., or uses the logical ID as a fallback. Improving the specificity of these derived names will make the `resource_arns_for_simulation` more accurate.
-    * **Tagging Permissions:** Includes a generic attempt to add `service:TagResource`. This should ideally be made specific per resource type within `RESOURCE_ACTION_MAP`.
-    * **To Extend:** Refine how resource names are extracted or predicted for ARN construction, especially for resources with auto-generated names.
+    * This function iterates through resources defined in the Cfn template.
+    * **Resource Naming for ARN Patterns:** It attempts to derive resource names from common properties (`RoleName`, `BucketName`, etc.) or uses the resource's logical ID as a fallback. Enhancing the logic to more accurately predict the final physical name (where possible, as CFN often adds unique suffixes) can improve ARN specificity for simulation.
+    * **Tagging Permissions:** The script includes a generic attempt to add `service:TagResource`. Ideally, this should be made specific per resource type within `RESOURCE_ACTION_MAP` (e.g., `s3:PutBucketTagging`, `iam:TagRole`).
+    * **How to Extend:** Refine how resource names are extracted or predicted. If a resource type has a very specific naming convention when created by CloudFormation without an explicit name, try to incorporate that into the ARN pattern generation.
 
 * **`check_prerequisites()` (Function):**
-    * Currently checks for `iam_role_exists` based on the `OutpostRoleArn` parameter.
-    * **To Extend:** Add more check types and logic if your template relies on other kinds of pre-existing resources (e.g., S3 buckets, KMS keys, VPCs) defined by parameters.
+    * Currently focuses on `iam_role_exists` for the `OutpostRoleArn` parameter.
+    * **How to Extend:** Add new check types (e.g., `s3_bucket_exists`, `kms_key_exists`, `vpc_exists`) and the corresponding Boto3 calls if your templates depend on other kinds of pre-existing resources identified by parameters.
 
 * **`simulate_iam_permissions()` (Function):**
-    * Constructs the input for `iam_client.simulate_principal_policy()`.
-    * **ContextEntries:** Currently includes an example for `sts:ExternalId`. If your IAM policies or SCPs rely heavily on other condition context keys (e.g., `aws:RequestTag/*`, `aws:SourceIp`, specific service conditions), add them to `context_entries` for more accurate simulation. The values for these context keys might need to be passed as parameters to the script.
-    * **Batching:** IAM simulation API has limits on the number of actions/resources per call. For very large templates, batching simulation calls might be necessary.
+    * Constructs the input for the `iam_client.simulate_principal_policy()` API call.
+    * **ContextEntries:** Currently includes `sts:ExternalId`. If your IAM policies or Service Control Policies (SCPs) rely heavily on other IAM condition context keys (e.g., `aws:RequestTag/*`, `aws:SourceIp`, `ec2:ResourceTag/...`, specific service condition keys), add them to the `context_entries` list for more accurate simulation. The values for these context keys might need to be passed as additional command-line parameters to the script or intelligently derived.
+    * **API Limits & Batching:** The `simulate_principal_policy` API has limits on the number of actions, resource ARNs, and context entries per call. For extremely large CloudFormation templates generating many actions/resources, the script might need to be enhanced to batch these simulation calls.
 
-## 7. Information from the Cortex XDR Cfn Template (`connectors_aws_cf-...yml`) relevant to this script:
+## 8. Information from the Cortex XDR Cfn Template (`connectors_aws_cf-...yml`) Relevant to This Script
 
-* **Parameters to Pay Attention To:**
-    * `OrganizationalUnitId`: Not directly used for IAM permission checks of the deploying principal in the *management account*, but crucial for the `AWS::CloudFormation::StackSet` resource's `DeploymentTargets`.
-    * `ExternalID`: Used in `sts:ExternalId` conditions in `AssumeRolePolicyDocument` for several roles. The script includes this in `ContextEntries` for simulation.
-    * `OutpostRoleArn`: A critical prerequisite. The script checks its existence. This ARN is used as a Principal in the `AssumeRolePolicyDocument` of `CortexPlatformRole`.
-    * `CortexPlatformRoleName`, `CortexPlatformScannerRoleName`: These define the names of key IAM roles to be created. The script uses these (or defaults) to construct ARN patterns for simulation.
-    * `Audience`, `CollectorServiceAccountId`: Used in the `AssumeRolePolicyDocument` of `CloudTrailReadRole`. These affect the trust policy, not directly the deploying principal's permissions to *create* the role, but a very advanced script might try to validate the resulting policy document's syntax.
-    * `OutpostAccountId`, `MTKmsAccount`: These Account IDs are used within inline policy conditions (e.g., `ec2:Add/userId`, KMS key resource ARNs). While the script doesn't deeply parse inline policy content for simulation actions, knowing these helps understand the template's intent.
+Understanding key aspects of the target CloudFormation template helps in interpreting the script's behavior and potential areas for refinement:
 
-* **Key Resource Types and Actions to Verify:**
-    * **`AWS::IAM::Role`:** `iam:CreateRole`, `iam:TagRole`, `iam:PutRolePolicy` (for inline policies), `iam:AttachRolePolicy` (for `ManagedPolicyArns`), `iam:PassRole` (if roles are passed to Lambda, e.g., for `CortexTemplateCustomLambdaFunction`).
-    * **`AWS::CloudFormation::StackSet`:** `cloudformation:CreateStackSet`, `iam:PassRole` (for `AdministrationRoleArn` and `ExecutionRoleName` if they were used, though this template uses `SERVICE_MANAGED` which has its own implications).
-    * **`AWS::Lambda::Function`:** `lambda:CreateFunction`, `lambda:TagResource`, `iam:PassRole` (for the function's execution role).
-    * **`AWS::KMS::Key`:** `kms:CreateKey`, `kms:TagResource`, `kms:PutKeyPolicy`.
-    * **`AWS::S3::Bucket`:** `s3:CreateBucket`, `s3:PutEncryptionConfiguration`, `s3:PutLifecycleConfiguration`, `s3:PutBucketTagging`.
-    * **`AWS::S3::BucketPolicy`:** `s3:PutBucketPolicy`.
-    * **`AWS::SQS::Queue`:** `sqs:CreateQueue`, `sqs:SetQueueAttributes`, `sqs:TagQueue`.
-    * **`AWS::SQS::QueuePolicy`:** `sqs:SetQueueAttributes` (policy is an attribute).
-    * **`AWS::SNS::Topic`:** `sns:CreateTopic`, `sns:SetTopicAttributes`, `sns:TagResource`.
-    * **`AWS::SNS::TopicPolicy`:** `sns:SetTopicAttributes`.
-    * **`AWS::SNS::Subscription`:** `sns:Subscribe`.
-    * **`AWS::CloudTrail::Trail`:** `cloudtrail:CreateTrail`, `cloudtrail:TagResource`, `s3:PutObject` (for the S3 bucket), `s3:GetBucketPolicy` (for CloudTrail to validate bucket policy), `kms:GenerateDataKey*` (for the KMS key).
+* **Key Parameters Influencing Checks:**
+    * `OrganizationalUnitId`: Primarily for `AWS::CloudFormation::StackSet`'s `DeploymentTargets`. Less directly related to the deploying principal's IAM permissions in the *management account* for basic resource creation, but vital for StackSet operation.
+    * `ExternalID`: Directly used in `sts:ExternalId` conditions within `AssumeRolePolicyDocument` for several IAM roles created by the template. The script includes this in `ContextEntries` for the IAM simulation.
+    * `OutpostRoleArn`: A critical prerequisite. The script checks its existence. This ARN is used as a `Principal` in the `AssumeRolePolicyDocument` of the `CortexPlatformRole`.
+    * `CortexPlatformRoleName`, `CortexPlatformScannerRoleName`: These define the names of key IAM roles to be created. The script uses these (or their defaults if not provided via `--parameters`) to construct more specific ARN patterns for simulation.
+    * `Audience`, `CollectorServiceAccountId`: Used in the `AssumeRolePolicyDocument` of the `CloudTrailReadRole`. These affect the trust policy of the created role.
+    * `OutpostAccountId`, `MTKmsAccount`: These Account IDs appear within conditions in inline IAM policies (e.g., `Cortex-Agentless-Policy` conditions like `ec2:Add/userId` or KMS key resource ARNs like `arn:aws:kms:*:${MTKmsAccount}:key/*`). While the script doesn't deeply parse inline policy *content* to extract further actions for the *deploying principal*, understanding these helps interpret the template's requirements.
 
-* **Intrinsic Functions and Naming:**
-    * The template uses `!Ref` extensively (e.g., `!Ref 'AWS::AccountId'`, `!Ref 'ExternalID'`).
-    * `!Sub` is used for constructing names and ARNs (e.g., `!Sub 'cortex-cloudtrail-logs-${AWS::AccountId}-m-o-1008133351020'`). The script attempts basic resolution.
-    * `!GetAtt` is used (e.g., `!GetAtt 'CloudTrailLogsQueue.Arn'`). Pre-flight resolution of `!GetAtt` is difficult; the script currently returns a placeholder.
-    * `!Join` is also used. The script attempts basic resolution.
+* **Primary Resource Types & General IAM Actions:**
+    * `AWS::IAM::Role`: Requires `iam:CreateRole`, `iam:TagRole`. If `ManagedPolicyArns` are present, `iam:AttachRolePolicy`. If `Policies` (inline) are present, `iam:PutRolePolicy`. If `Role` is passed to Lambda (e.g., for `CortexTemplateCustomLambdaFunction`'s execution role), `iam:PassRole` on the execution role ARN.
+    * `AWS::CloudFormation::StackSet`: `cloudformation:CreateStackSet`, `iam:PassRole` (for `AdministrationRoleARN` and `ExecutionRoleName` if explicitly defined; this template uses `SERVICE_MANAGED` permissions, which implies CloudFormation service principals handle cross-account actions based on OU trust).
+    * `AWS::Lambda::Function`: `lambda:CreateFunction`, `lambda:TagResource`, `iam:PassRole` (for the function's specified execution role).
+    * `AWS::KMS::Key`: `kms:CreateKey`, `kms:TagResource`, `kms:PutKeyPolicy` (as key policy is usually defined at creation).
+    * `AWS::S3::Bucket`: `s3:CreateBucket`, `s3:PutEncryptionConfiguration`, `s3:PutLifecycleConfiguration`, `s3:PutBucketTagging`.
+    * `AWS::S3::BucketPolicy`: `s3:PutBucketPolicy` (action on the bucket).
+    * `AWS::SQS::Queue`: `sqs:CreateQueue`, `sqs:SetQueueAttributes` (for policies/attributes), `sqs:TagQueue`.
+    * `AWS::SNS::Topic`: `sns:CreateTopic`, `sns:SetTopicAttributes`, `sns:TagResource`.
+    * `AWS::SNS::Subscription`: `sns:Subscribe`. Note: The endpoint (e.g., SQS queue) also needs a policy allowing SNS to publish to it.
+    * `AWS::CloudTrail::Trail`: `cloudtrail:CreateTrail`, `cloudtrail:TagResource`. Also requires permissions for associated resources: `s3:PutObject` (for the S3 bucket), `s3:GetBucketAcl` (CloudTrail needs to verify bucket), `kms:GenerateDataKey*` (for the specified KMS key).
 
-* **Custom Resources:** The template defines `Custom::PublishRoleDetail` and `Custom::EmptyBucketDetails`. The pre-flight check focuses on permissions to create the backing `AWS::Lambda::Function` and its `AWS::IAM::Role`.
+* **Use of Intrinsic Functions and Naming:**
+    * The template makes extensive use of `!Ref` (e.g., `!Ref 'AWS::AccountId'`, `!Ref 'ExternalID'`).
+    * `!Sub` is frequently used for constructing resource names and ARNs (e.g., `!Sub 'cortex-cloudtrail-logs-${AWS::AccountId}-m-o-1008133351020'`). The script's basic resolution of these is vital.
+    * `!GetAtt` is used (e.g., `!GetAtt 'CloudTrailLogsQueue.Arn'`). Accurate pre-flight resolution of `!GetAtt` for attributes of not-yet-created resources is highly complex; the script currently returns a placeholder string for these.
+    * `!Join` is also present. The script performs basic resolution for this.
 
-## 8. Caveats and Limitations
+* **Custom Resources (`Custom::PublishRoleDetail`, `Custom::EmptyBucketDetails`):**
+    * The pre-flight check will focus on the deploying principal's permissions to create the backing `AWS::Lambda::Function` and its associated `AWS::IAM::Role` (the execution role).
+    * It does **not** validate the internal logic of these Lambda functions (e.g., the external HTTP PUT request made by `CortexTemplateCustomLambdaFunction`).
 
-* **IAM Simulation is Not Perfect:**
-    * AWS IAM `simulate_principal_policy` is a powerful tool but may not replicate every real-world authorization scenario, especially with complex condition keys, resource policies not yet created, or service-specific behaviors.
-    * Simulating with wildcard resource ARNs (`*`) (often necessary for not-yet-created resources) can lead to "allowed" decisions that might fail in practice if the principal's actual permissions are scoped to specific resource names or paths that CloudFormation would generate.
-* **Incomplete IAM Action Mapping:** The `RESOURCE_ACTION_MAP` in the script is a starting point. It likely does not cover every IAM permission required for every property of every resource in the Cfn template. Thoroughly mapping all actions is a continuous effort.
-* **Limited Intrinsic Function Resolution:** The script handles only basic `!Ref`, `!Sub`, and `!Join`. More complex template logic using other functions or nested structures might not be fully resolved, potentially affecting the accuracy of generated ARNs for simulation.
-* **CloudFormation Conditions:** The script does not evaluate `Condition` statements in the template. It assumes all defined resources are intended for creation when gathering actions for simulation.
-* **Service Quotas (Limits):** This script **does not** check if your AWS account has sufficient service quotas (e.g., number of IAM roles, S3 buckets) for the resources to be deployed.
-* **StackSet Instance Permissions:** For `AWS::CloudFormation::StackSet` with `SERVICE_MANAGED` permissions, this script primarily checks the deploying principal's ability to create/manage the StackSet itself in the management account. The permissions needed by the *StackSet execution role* in the target accounts are a separate, more complex validation that this script does not cover.
-* **Custom Resource Logic:** The script checks permissions to create the custom resource's backing Lambda and its IAM role. It **cannot** validate the internal logic of the Lambda function (e.g., its ability to make external HTTP calls as seen in `CortexTemplateCustomLambdaFunction`).
-* **Dynamic References During Deployment:** CloudFormation often resolves references and generates names dynamically during stack creation. Predicting all these perfectly pre-flight is challenging.
-* **Idempotency of the Script:** The script itself is read-only and makes no changes to your AWS environment.
+## 9. Caveats and Limitations
 
-## 9. Disclaimer
+* **IAM Simulation Accuracy:**
+    * AWS IAM `simulate_principal_policy` is a powerful diagnostic tool but may not perfectly replicate every real-world authorization scenario, especially those involving complex IAM condition keys, resource-based policies on resources that are not yet created, or nuanced service-specific behaviors during CloudFormation deployment.
+    * **Wildcard ARNs:** For resources that do not yet exist, the script often uses wildcard ARNs (e.g., `arn:aws:s3:::*` or `arn:aws:iam::123456789012:role/*`) in the simulation. An "allowed" decision with a wildcard means the principal can perform the action on *any* resource of that type. This is less precise than simulating against a specific, fully-formed ARN. If the principal's actual IAM policies are narrowly scoped to specific resource names or paths that CloudFormation would generate, a wildcard simulation might incorrectly report "allowed," while the actual deployment could fail.
+* **Incomplete IAM Action Mapping (`RESOURCE_ACTION_MAP`):** The provided map is a strong starting point tailored to the Cfn template but may not cover every IAM permission required for every possible property or configuration of every AWS resource. AWS IAM is extensive, and new features or properties can introduce new permission requirements. Continuous refinement of this map is key to improving accuracy.
+* **Limited Intrinsic Function Resolution:** The script currently handles only basic `!Ref` (to parameters and AWS pseudo-parameters), `!Sub` (simple substitutions), and `!Join`. More complex CloudFormation template logic using other intrinsic functions (`!GetAtt` for non-existent resources, `!ImportValue`, `!Select`, `!Split`, etc.) or deeply nested functions may not be fully resolved. This can affect the accuracy of the predicted resource ARNs and, consequently, the IAM simulation.
+* **CloudFormation `Condition` Statements:** The script does not evaluate `Condition` statements within the CloudFormation template. It generally assumes all resources defined in the `Resources` section are intended for creation when it gathers IAM actions for simulation.
+* **Service Quotas (AWS Limits):** This script **does not** check if your AWS account has sufficient service quotas (e.g., limits on the number of IAM roles, S3 buckets, VPCs, etc.) for the resources intended to be deployed. Quota issues can cause deployment failures unrelated to IAM permissions.
+* **`AWS::CloudFormation::StackSet` Instance Permissions:** For the `AWS::CloudFormation::StackSet` resource, especially when using `PermissionModel: SERVICE_MANAGED` (as in the Cfn template), this script primarily checks the deploying principal's permissions to create and manage the StackSet *itself* in the management account (e.g., `cloudformation:CreateStackSet`). The permissions required by the *StackSet's execution role* (which CloudFormation typically creates or you specify) to provision/manage stack *instances* in the target accounts/OUs are a separate, more complex validation scope that this script does not currently cover in depth.
+* **Custom Resource Internal Logic:** The script checks permissions to create the custom resource's backing Lambda function and its IAM execution role. It **cannot** validate the internal logic or actions performed by the Lambda function code itself (e.g., its ability to make external HTTP calls, as seen with `CortexTemplateCustomLambdaFunction` in the Cfn template).
+* **Dynamic Naming by CloudFormation:** CloudFormation often appends unique suffixes to resource names if a name isn't explicitly provided. Predicting these exact physical IDs pre-flight is generally impossible. The script uses logical IDs or patterns as placeholders.
+* **Script Idempotency (Read-Only):** The script itself is designed to be read-only and makes no changes to your AWS environment.
 
-This script is provided "as-is" without any warranties, for educational and pre-flight checking purposes. Always test thoroughly in a non-production environment before relying on its results for critical deployments. The IAM entity running this script and the principal being simulated should have appropriate, least-privilege permissions. The authors or contributors are not responsible for any issues, damages, or incorrect conclusions arising from its use or interpretation. Ensure you understand its limitations.
+## 10. Disclaimer
+
+This script is provided "as-is" without any warranties, for educational and pre-flight diagnostic purposes. It is a tool to aid in identifying potential issues and is not a replacement for thorough testing and understanding of AWS IAM and CloudFormation. Always test CloudFormation templates and associated permissions in a non-production environment first. The IAM entity running this script, and the principal whose permissions are being simulated, should adhere to the principle of least privilege. The authors or contributors are not responsible for any issues, damages, or incorrect conclusions arising from the use or interpretation of this script or its results. Users should be aware of its limitations and use their judgment when interpreting its output.
