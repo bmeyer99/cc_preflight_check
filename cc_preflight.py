@@ -287,24 +287,26 @@ def resolve_value(value, parameters, account_id, region, resources_in_template):
             # Extremely simplified Sub - only handles direct replacements of global/params
             # Does not handle the list form of Fn::Sub or complex expressions.
             if isinstance(sub_val, str):
-                resolved_sub = sub_val
-                resolved_sub = resolved_sub.replace("${AWS::AccountId}", account_id)
-                resolved_sub = resolved_sub.replace("${AWS::Region}", region)
-                for pk, pv in parameters.items():
-                    resolved_sub = resolved_sub.replace(f"${{{pk}}}", str(pv))
-                
-                # Attempt to resolve resource Refs within Sub strings
-                # e.g., "arn:aws:s3:::${MyBucket}"
-                def replace_ref_in_sub(match):
-                    ref_name = match.group(1)
-                    if ref_name in parameters:
-                        return str(parameters[ref_name])
-                    # Here you might want to return a placeholder for resource logical IDs
-                    # if you can't fully resolve them to ARNs during pre-flight.
-                    # For now, just return the reference itself if not a parameter.
-                    return f"${{{ref_name}}}" # Or a more specific placeholder
+                # Handle simple string substitution
+                def replace_sub_variables(match):
+                    variable_name = match.group(1)
+                    # 1. Check for Pseudo Parameters
+                    if variable_name.startswith("AWS::"):
+                        # For this task, replace with a fixed placeholder
+                        return f"PSEUDO_PARAM_{variable_name.replace('AWS::', '')}"
+                    # 2. Check for Parameters
+                    if variable_name in parameters:
+                        return str(parameters[variable_name])
+                    # 3. Check for Logical Resource IDs
+                    if variable_name in resources_in_template:
+                        # Return a placeholder for resource logical IDs
+                        return f"arn:aws:::resolved-sub-{variable_name.lower()}"
+                    # 4. Unresolved - return a placeholder
+                    print(f"Warning: Unresolved variable in Fn::Sub: ${{{variable_name}}}", file=sys.stderr)
+                    return f"UNRESOLVED_SUB_VAR_{variable_name}"
 
-                resolved_sub = re.sub(r"\$\{(.+?)\}", replace_ref_in_sub, resolved_sub)
+                # Use the updated replacement function
+                resolved_sub = re.sub(r"\$\{(.+?)\}", replace_sub_variables, sub_val)
                 return resolved_sub
             else: # List form of Fn::Sub not fully supported here
                 print(f"Warning: Fn::Sub list form or complex expressions not fully supported for pre-flight resolution: {sub_val}", file=sys.stderr)
