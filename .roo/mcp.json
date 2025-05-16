@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "Brave Web Search": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-brave-search"
+      ],
+      "env": {
+        "BRAVE_API_KEY": "BSA9hqqU3rVqzDzpeSPqQr364PpaGu5"
+      },
+      "disabled": false,
+      "autoApprove": [],
+      "alwaysAllow": [
+        "brave_web_search"
+      ]
+    },
+    "Fetch": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-fetch"
+      ],
+      "alwaysAllow": [
+        "fetch"
+      ]
+    }
+  }
+}
