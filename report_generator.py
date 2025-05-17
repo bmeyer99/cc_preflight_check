@@ -291,8 +291,8 @@ def _generate_html_content(
     # Get current date and time
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    # Determine overall status
-    overall_status = "PASS" if prereqs_ok and permissions_ok else "FAIL"
+    # Determine overall status - now primarily based on permissions_ok (IAM Simulation)
+    overall_status = "PASS" if permissions_ok else "FAIL"
     status_color = "green" if overall_status == "PASS" else "red"
     
     # Count total actions and resources
@@ -381,6 +381,7 @@ def _generate_html_content(
             <p><strong>Template:</strong> {os.path.basename(template_file)}</p>
             <p><strong>Principal:</strong> {principal_arn}</p>
             <p><strong>Region:</strong> {region}</p>
+            {f'<p><strong>Deploying Principal IAM Simulation:</strong> <span style="color: green; font-weight: bold;">PASS</span></p>' if permissions_ok else ''}
         </div>
     </div>
     
@@ -425,12 +426,19 @@ def _generate_html_content(
             
             <div class="summary-conclusion">
                 <p><strong>Conclusion:</strong> """ + (
-                    "All checks passed. The principal has sufficient permissions to deploy the CloudFormation template."
-                    if overall_status == "PASS" else
-                    "Some checks failed. " +
-                    ("The deploying principal lacks necessary IAM permissions. " if not permissions_ok else "") +
-                    ("Prerequisite resources are missing. " if not prereqs_ok else "") +
-                    "See detailed findings for more information."
+                    # If permissions_ok is True (IAM Simulation PASS)
+                    "<strong>Deploying Principal IAM Simulation: PASS.</strong> The principal appears to have sufficient IAM permissions for the CloudFormation deployment actions. " +
+                    # Add information about prerequisite checks
+                    ("<strong>Prerequisite Resource Checks: PASS.</strong> " if prereqs_ok else
+                     "However, one or more <strong>Prerequisite Resource Checks: FAIL.</strong> Some required resources are missing or misconfigured. ") +
+                    "Review detailed findings for specifics."
+                    if permissions_ok else
+                    # If permissions_ok is False (IAM Simulation FAIL)
+                    "<strong>Deploying Principal IAM Simulation: FAIL.</strong> The deploying principal lacks necessary IAM permissions. " +
+                    # Add information about prerequisite checks
+                    ("<strong>Prerequisite Resource Checks: PASS.</strong> " if prereqs_ok else
+                     "Additionally, one or more <strong>Prerequisite Resource Checks: FAIL.</strong> Some required resources are missing or misconfigured. ") +
+                    "Remediation steps and a suggested IAM policy are provided in Section 3. See detailed findings for more information."
                 ) + """</p>
             </div>
         </div>
@@ -442,8 +450,8 @@ def _generate_html_content(
         <h3 id="prerequisite-checks">2.1 Prerequisite Checks</h3>
         <div class="findings-section">
             <p>Prerequisite checks verify that required resources exist before template deployment.</p>
-            <div class="status-indicator status-{("green" if prereqs_ok else "red")}" style="color: {("green" if prereqs_ok else "red")}; background-color: {("#f0fff0" if prereqs_ok else "#fff0f0")};">
-                Status: {("PASS" if prereqs_ok else "FAIL")}
+            <div class="status-indicator """ + ("status-green" if prereqs_ok else "status-red") + """" style="color: """ + ("green" if prereqs_ok else "red") + """; background-color: """ + ("#f0fff0" if prereqs_ok else "#fff0f0") + """;">
+                Status: """ + ("PASS" if prereqs_ok else "FAIL") + """
             </div>
             
             <table class="findings-table">
@@ -492,8 +500,8 @@ def _generate_html_content(
         <h3 id="permission-checks">2.2 Deploying Principal IAM Simulation</h3>
         <div class="findings-section">
             <p>IAM simulation verifies that the deploying principal has the necessary permissions to deploy the CloudFormation template and access prerequisite resources. This does not include permissions for resources created by the template.</p>
-            <div class="status-indicator status-{("green" if permissions_ok else "red")}" style="color: {("green" if permissions_ok else "red")}; background-color: {("#f0fff0" if permissions_ok else "#fff0f0")};">
-                Status: {("PASS" if permissions_ok else "FAIL")}
+            <div class="status-indicator """ + ("status-green" if permissions_ok else "status-red") + """" style="color: """ + ("green" if permissions_ok else "red") + """; background-color: """ + ("#f0fff0" if permissions_ok else "#fff0f0") + """;">
+                Status: """ + ("PASS" if permissions_ok else "FAIL") + """
             </div>
             
             <table class="findings-table">
