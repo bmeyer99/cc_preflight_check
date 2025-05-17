@@ -96,34 +96,61 @@ The core of the tool is the IAM permission simulation, which:
   - `iam:SimulatePrincipalPolicy`
   - `sts:GetCallerIdentity`
   - Permissions to describe any prerequisite resources
+  - `organizations:ListRoots` and `organizations:ListOrganizationalUnitsForParent` (if using OU discovery)
+
+### Interactive Mode (New)
+
+The tool now supports an interactive mode that automatically detects AWS configurations and prompts for missing parameters:
+
+```bash
+python cc_preflight.py --template-file <path_to_cloudformation_template>
+```
+
+In interactive mode, the tool will:
+
+1. **Auto-detect AWS profile** - Lists available profiles and lets you select one
+2. **Auto-detect AWS region** - Uses the default region from your AWS config or prompts for selection
+3. **Auto-detect deploying principal** - Uses your current AWS identity
+4. **Prompt for CloudFormation parameters** - Prompts for any required parameters with defaults from the template
+5. **Discover Organizational Units** - For templates requiring an `OrganizationalUnitId`, lists available OUs for selection
+6. **Generate IAM policy** - Offers to generate an IAM policy document for any missing permissions
 
 ### Command-Line Arguments
 
 ```bash
 python cc_preflight.py \
     --template-file <path_to_cloudformation_template> \
-    --deploying-principal-arn <arn_of_deploying_principal> \
-    --region <aws_region> \
+    [--deploying-principal-arn <arn_of_deploying_principal>] \
+    [--region <aws_region>] \
     [--parameters <key1=value1> <key2=value2> ...] \
     [--profile <aws_cli_profile>] \
-    [--condition-values <json_string_of_condition_values>]
+    [--condition-values <json_string_of_condition_values>] \
+    [--non-interactive]
 ```
 
 #### Required Arguments
 
 - **`--template-file`**: Path to the CloudFormation template file (YAML or JSON).
-- **`--deploying-principal-arn`**: ARN of the IAM principal that will deploy the CloudFormation stack.
-- **`--region`**: AWS region where the stack will be deployed.
 
 #### Optional Arguments
 
+- **`--deploying-principal-arn`**: ARN of the IAM principal that will deploy the CloudFormation stack. If not provided, will use current identity or prompt.
+- **`--region`**: AWS region where the stack will be deployed. If not provided, will use default region or prompt.
 - **`--parameters`**: CloudFormation parameters as key-value pairs (e.g., `OutpostRoleArn=arn:aws:iam::123456789012:role/MyRole`).
 - **`--profile`**: AWS CLI profile to use for API calls.
 - **`--condition-values`**: JSON string of condition name to boolean value mappings (e.g., `{"IsProduction": true, "EnableFeatureX": false}`).
+- **`--non-interactive`**: Run in non-interactive mode (no prompts). In this mode, all required parameters must be provided via command-line arguments.
 
 ### Example Commands
 
-#### Basic Usage
+#### Interactive Mode (Recommended)
+
+```bash
+# Minimal command - will prompt for all required information
+python cc_preflight.py --template-file ./my-cloudformation-template.yml
+```
+
+#### Basic Usage with Command-Line Arguments
 
 ```bash
 python cc_preflight.py \
@@ -153,14 +180,28 @@ python cc_preflight.py \
     --condition-values '{"IsProduction": true, "EnableEncryption": true}'
 ```
 
+#### Non-Interactive Mode
+
+```bash
+python cc_preflight.py \
+    --template-file ./my-cloudformation-template.yml \
+    --deploying-principal-arn arn:aws:iam::123456789012:role/DeploymentRole \
+    --region us-east-1 \
+    --parameters "OrganizationalUnitId=r-abc123" "ExternalID=abcdef-123456" \
+    --non-interactive
+```
+
 ### Understanding the Output
 
 The tool provides detailed output at each stage of the analysis:
 
-1. **Template Parsing**: Shows resolved parameters and processed resources.
-2. **Prerequisite Checks**: Reports whether all prerequisite resources exist.
-3. **IAM Simulation**: Lists all actions to be simulated and their results (PASS/FAIL).
-4. **Summary**: Provides an overall assessment of whether the deployment is likely to succeed.
+1. **AWS Configuration**: Shows detected or selected AWS profile, region, and identity.
+2. **CloudFormation Parameters**: Lists the parameters being used for the template.
+3. **Template Parsing**: Shows resolved parameters and processed resources.
+4. **Prerequisite Checks**: Reports whether all prerequisite resources exist.
+5. **IAM Simulation**: Lists all actions to be simulated and their results (PASS/FAIL).
+6. **Policy Generation**: If permissions are missing, offers to generate an IAM policy document.
+7. **Summary**: Provides an overall assessment of whether the deployment is likely to succeed.
 
 Example output:
 ```
@@ -194,7 +235,41 @@ Resolved CloudFormation Parameters for pre-flight checks: {'BucketName': 'my-uni
 Pre-flight checks identified issues. Review failures before deploying.
 ```
 
-## 4. Known Limitations
+## 4. New Features
+
+### AWS Configuration Auto-Detection
+
+The tool now automatically detects and uses:
+
+- **AWS CLI Profiles**: Lists available profiles and allows selection
+- **Default Region**: Uses the region from your AWS config
+- **Current Identity**: Uses your current AWS identity for permission simulation
+
+### Interactive Parameter Prompting
+
+For any required CloudFormation parameters not provided via command-line:
+
+- **Default Values**: Uses default values from the template when available
+- **Parameter Descriptions**: Shows parameter descriptions from the template
+- **Sensitive Values**: Masks sensitive values like ExternalID in the output
+
+### AWS Organizations Integration
+
+For templates that require an `OrganizationalUnitId` parameter:
+
+- **OU Discovery**: Lists all OUs in your AWS Organization
+- **OU Selection**: Allows selection from the list or manual entry
+- **Path Display**: Shows the full path of each OU for easier identification
+
+### IAM Policy Generation
+
+When permission simulation fails:
+
+- **Policy Document**: Generates an IAM policy document for the missing permissions
+- **Resource Grouping**: Groups actions by resource for better organization
+- **JSON Format**: Outputs the policy in JSON format ready to use in IAM
+
+## 5. Known Limitations
 
 - **Intrinsic Function Resolution**:
   - Limited support for complex `Fn::Sub` list forms.
@@ -217,6 +292,10 @@ Pre-flight checks identified issues. Review failures before deploying.
 
 - **Dynamic Naming**:
   - CloudFormation often appends unique suffixes to resource names. The tool uses logical IDs or patterns as placeholders, which may not match the exact physical IDs.
+
+- **AWS Organizations Access**:
+  - OU discovery requires `organizations:ListRoots` and `organizations:ListOrganizationalUnitsForParent` permissions.
+  - If these permissions are not available, the tool will fall back to manual input for the `OrganizationalUnitId` parameter.
 
 ## 5. Extending the Tool
 

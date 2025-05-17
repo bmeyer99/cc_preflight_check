@@ -1,0 +1,17 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:CreateStack",
+        "cloudformation:CreateStackSet",
+        "kms:CreateKey",
+        "organizations:ListAWSServiceAccessForOrganization",
+        "sns:SetSubscriptionAttributes",
+        "sns:SetTopicAttributes"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

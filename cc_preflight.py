@@ -20,14 +20,41 @@ Key features:
 import argparse
 import json
 import sys
+import os
 import functools
+import getpass
 from typing import Dict, List, Set, Tuple, Any, Optional, Callable
 import yaml
 import boto3
-from botocore.exceptions import ClientError, NoCredentialsError, PartialCredentialsError
+from botocore.exceptions import ClientError, NoCredentialsError, PartialCredentialsError, ProfileNotFound
 
 from resource_map import RESOURCE_ACTION_MAP
 from value_resolver import resolve_value
+
+# Custom exceptions for better error handling
+class CCPreflightError(Exception):
+    """Base exception class for all cc_preflight errors."""
+    pass
+
+class TemplateError(CCPreflightError):
+    """Exception raised for errors in the CloudFormation template."""
+    pass
+
+class InputError(CCPreflightError):
+    """Exception raised for errors in user input."""
+    pass
+
+class AWSError(CCPreflightError):
+    """Exception raised for AWS API errors."""
+    pass
+
+class ResourceError(CCPreflightError):
+    """Exception raised for errors related to resources."""
+    pass
+
+class ValidationError(CCPreflightError):
+    """Exception raised for validation errors."""
+    pass
 
 # Define CloudFormation YAML tag handlers
 def cfn_ref_constructor(loader, node):
@@ -188,13 +215,14 @@ def get_aws_account_id(sts_client) -> str:
         AWS account ID
         
     Raises:
-        SystemExit: If account ID cannot be determined
+        AWSError: If account ID cannot be determined due to AWS API issues
     """
     try:
         return sts_client.get_caller_identity()["Account"]
     except (ClientError, NoCredentialsError, PartialCredentialsError) as e:
-        print(f"Error: Could not determine AWS Account ID. {e}", file=sys.stderr)
-        sys.exit(1)
+        error_msg = f"Could not determine AWS Account ID: {e}"
+        print(f"Error: {error_msg}", file=sys.stderr)
+        raise AWSError(error_msg)
 
 def evaluate_condition(condition_name: str, context: Dict[str, Any]) -> bool:
     """
@@ -509,20 +537,40 @@ def _load_template(template_path: str) -> Dict[str, Any]:
         Parsed template as a dictionary
         
     Raises:
-        Exception: If template cannot be read or parsed
+        TemplateError: If template file doesn't exist or has invalid syntax
+        ValidationError: If template is missing required sections
     """
-    with open(template_path, 'r') as f:
-        # Use C-based YAML loader if available for better performance
-        try:
-            # Try to use the C-based loader for better performance
-            return yaml.CSafeLoader(f).get_data()
-        except AttributeError:
-            # Fall back to the Python-based loader
-            return yaml.safe_load(f)
+    # Check if file exists
+    if not os.path.isfile(template_path):
+        raise TemplateError(f"Template file not found: '{template_path}'")
+    
+    try:
+        with open(template_path, 'r') as f:
+            # Use C-based YAML loader if available for better performance
+            try:
+                # Try to use the C-based loader for better performance
+                template = yaml.CSafeLoader(f).get_data()
+            except AttributeError:
+                # Fall back to the Python-based loader
+                template = yaml.safe_load(f)
+                
+        # Validate template structure
+        if not isinstance(template, dict):
+            raise ValidationError("Template is not a valid CloudFormation template (not a dictionary)")
+            
+        # Check for required sections
+        if "Resources" not in template or not template["Resources"]:
+            raise ValidationError("Template is missing the 'Resources' section or it's empty")
+            
+        return template
+    except yaml.YAMLError as e:
+        raise TemplateError(f"Invalid YAML/JSON syntax in template: {e}")
+    except Exception as e:
+        raise TemplateError(f"Failed to load template: {e}")
 
 def parse_template_and_collect_actions(template_path: str, cfn_parameters: Dict[str, Any],
-                                      account_id: str, region: str,
-                                      condition_values: Optional[Dict[str, bool]] = None) -> Tuple[List[str], List[str], List[Dict[str, Any]]]:
+                                       account_id: str, region: str,
+                                       condition_values: Optional[Dict[str, bool]] = None) -> Tuple[List[str], List[str], List[Dict[str, Any]]]:
     """
     Parse the CloudFormation template and collect IAM actions and resource ARNs required for deployment.
     
@@ -548,7 +596,9 @@ def parse_template_and_collect_actions(template_path: str, cfn_parameters: Dict[
         - List of prerequisite checks to perform
         
     Raises:
-        SystemExit: If template cannot be read or parsed
+        TemplateError: If template cannot be read or parsed
+        ValidationError: If template is missing required sections
+        ResourceError: If there are issues with resource processing
     """
     print(f"\nParsing template: {template_path}...")
     actions_to_simulate: Set[str] = set()
@@ -557,9 +607,9 @@ def parse_template_and_collect_actions(template_path: str, cfn_parameters: Dict[
 
     try:
         template = _load_template(template_path)
-    except Exception as e:
-        print(f"Error: Could not read or parse template file '{template_path}'. {e}", file=sys.stderr)
-        sys.exit(1)
+    except (TemplateError, ValidationError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        raise
 
     template_parameters = template.get("Parameters", {})
     resources = template.get("Resources", {})
@@ -597,6 +647,10 @@ def parse_template_and_collect_actions(template_path: str, cfn_parameters: Dict[
     # Process each resource in the template
     for logical_id, resource_def in resources.items():
         resource_type = resource_def.get("Type")
+        if not resource_type:
+            print(f"  Warning: Resource {logical_id} is missing a Type definition, skipping", file=sys.stderr)
+            continue
+            
         properties = resource_def.get("Properties", {})
         
         # Check if resource has a Condition and evaluate it
@@ -605,11 +659,15 @@ def parse_template_and_collect_actions(template_path: str, cfn_parameters: Dict[
             print(f"  Resource {logical_id} has condition: {condition_name}")
             
             # Evaluate the condition
-            condition_result = evaluate_condition(condition_name, context)
-            
-            # Skip resource if condition evaluates to false
-            if not condition_result:
-                print(f"  Skipping resource {logical_id} due to condition {condition_name} evaluating to false")
+            try:
+                condition_result = evaluate_condition(condition_name, context)
+                
+                # Skip resource if condition evaluates to false
+                if not condition_result:
+                    print(f"  Skipping resource {logical_id} due to condition {condition_name} evaluating to false")
+                    continue
+            except Exception as e:
+                print(f"  Warning: Error evaluating condition '{condition_name}' for resource '{logical_id}': {e}. Assuming false.", file=sys.stderr)
                 continue
 
         print(f"  Processing resource: {logical_id} (Type: {resource_type})")
@@ -722,17 +780,36 @@ def check_prerequisites(checks: List[Dict[str, Any]], iam_client, region: str) -
         
     Returns:
         Boolean indicating if all prerequisite checks passed
+        
+    Raises:
+        AWSError: If there are issues with AWS API calls
+        ValidationError: If check format is invalid
     """
     print("\n--- Checking Prerequisites ---")
     all_prereqs_ok = True
     
+    if not checks:
+        print("  No specific prerequisite resource checks defined.")
+        return True
+    
     for check in checks:
-        print(f"  Checking: {check['description']} (ARN: {check['arn']})")
+        if not isinstance(check, dict) or 'type' not in check or 'arn' not in check:
+            print(f"  Warning: Invalid prerequisite check format: {check}", file=sys.stderr)
+            all_prereqs_ok = False
+            continue
+            
+        description = check.get('description', check['type'])
+        print(f"  Checking: {description} (ARN: {check['arn']})")
         
         if check["type"] == "iam_role_exists":
             try:
                 # Extract role name from ARN
-                role_name = check["arn"].split('/')[-1]
+                if '/' in check["arn"]:
+                    role_name = check["arn"].split('/')[-1]
+                else:
+                    print(f"    [WARN] Invalid IAM role ARN format: {check['arn']}")
+                    role_name = check["arn"].split(':')[-1]
+                    
                 iam_client.get_role(RoleName=role_name)
                 print(f"    [PASS] Prerequisite IAM Role '{check['arn']}' exists.")
             except ClientError as e:
@@ -740,16 +817,18 @@ def check_prerequisites(checks: List[Dict[str, Any]], iam_client, region: str) -
                     print(f"    [FAIL] Prerequisite IAM Role '{check['arn']}' does not exist.")
                     all_prereqs_ok = False
                 else:
-                    print(f"    [ERROR] Error checking prerequisite IAM Role: {e}")
+                    error_msg = f"Error checking prerequisite IAM Role: {e}"
+                    print(f"    [ERROR] {error_msg}")
                     all_prereqs_ok = False
             except Exception as e:
-                print(f"    [ERROR] Unexpected error checking prerequisite: {e}")
+                error_msg = f"Unexpected error checking prerequisite: {e}"
+                print(f"    [ERROR] {error_msg}")
                 all_prereqs_ok = False
-
+        else:
+            print(f"    [WARN] Unknown prerequisite check type: {check['type']}")
+    
     # Summary
-    if not checks:
-        print("  No specific prerequisite resource checks defined.")
-    elif all_prereqs_ok:
+    if all_prereqs_ok:
         print("  All checked prerequisites appear to be in place.")
     else:
         print("  Some prerequisite checks failed.")
@@ -758,8 +837,8 @@ def check_prerequisites(checks: List[Dict[str, Any]], iam_client, region: str) -
 
 
 def simulate_iam_permissions(iam_client, principal_arn: str, actions: List[str],
-                            resource_arns: List[str],
-                            context_entries: Optional[List[Dict[str, Any]]] = None) -> Tuple[bool, List[Dict[str, Any]]]:
+                              resource_arns: List[str],
+                              context_entries: Optional[List[Dict[str, Any]]] = None) -> Tuple[bool, List[Dict[str, Any]]]:
     """
     Simulate IAM permissions for the given principal, actions, and resources.
     
@@ -769,8 +848,7 @@ def simulate_iam_permissions(iam_client, principal_arn: str, actions: List[str],
     validation of permissions without actually attempting the operations.
     
     The function handles:
-    - Preparing the simulation input
-    - Running the simulation via the IAM API
+    - Simulating each action individually to avoid compatibility issues
     - Processing and displaying the results
     - Identifying specific reasons for permission denials (e.g., SCPs, permission boundaries)
     
@@ -786,8 +864,17 @@ def simulate_iam_permissions(iam_client, principal_arn: str, actions: List[str],
         Tuple containing:
         - Boolean indicating if all actions are allowed
         - List of failed simulation results
+        
+    Raises:
+        AWSError: If there are issues with AWS API calls
+        ValidationError: If input parameters are invalid
     """
     print("\n--- Simulating IAM Permissions ---")
+    
+    # Validate inputs
+    if not principal_arn or not principal_arn.startswith("arn:"):
+        raise ValidationError(f"Invalid principal ARN format: {principal_arn}")
+    
     print(f"  Principal ARN for Simulation: {principal_arn}")
     print(f"  Actions to Simulate ({len(actions)}): {actions}")
     print(f"  Resource ARNs for Simulation ({len(resource_arns)}): {resource_arns if resource_arns else ['*']}")
@@ -797,44 +884,92 @@ def simulate_iam_permissions(iam_client, principal_arn: str, actions: List[str],
         print("  No actions to simulate. Skipping IAM simulation.")
         return True, []
     
+    # Use '*' if no resource ARNs provided
+    if not resource_arns:
+        resource_arns = ['*']
+    
     try:
-        # Prepare simulation input
-        simulation_input = {
-            'PolicySourceArn': principal_arn,
-            'ActionNames': actions,
-            'ResourceArns': resource_arns if resource_arns else ['*']
-        }
-        
-        if context_entries:
-            simulation_input['ContextEntries'] = context_entries
-        
-        # Run simulation
-        response = iam_client.simulate_principal_policy(**simulation_input)
-        
+        # Due to compatibility issues between different action types,
+        # we'll simulate each action individually
         all_allowed = True
-        failed_simulations = []
-
-        # Process results
-        print("\n  Simulation Results:")
-        for eval_result in response.get('EvaluationResults', []):
-            eval_action_name = eval_result['EvalActionName']
-            eval_decision = eval_result['EvalDecision']
-            eval_resource_name = eval_result.get('EvalResourceName', '*')
-
-            # Display result
-            decision_marker = "[PASS]" if eval_decision == "allowed" else "[FAIL]"
-            print(f"    {decision_marker} Action: {eval_action_name}, Resource: {eval_resource_name}")
-
-            # Track failures
-            if eval_decision != "allowed":
-                all_allowed = False
-                failed_simulations.append(eval_result)
+        all_failed_simulations = []
+        
+        # Process actions one by one
+        print(f"  Processing {len(actions)} actions individually")
+        
+        # Group similar actions to reduce output verbosity
+        action_groups = {}
+        
+        for i, action in enumerate(actions):
+            # Show progress every 10 actions
+            if i % 10 == 0:
+                print(f"  Progress: {i}/{len(actions)} actions processed")
                 
-                # Show denial reasons
-                if eval_result.get('OrganizationsDecisionDetail', {}).get('AllowedByOrganizations') == False:
-                    print(f"      Denied by: Organizations SCP")
-                if eval_result.get('PermissionsBoundaryDecisionDetail', {}).get('AllowedByPermissionsBoundary') == False:
-                    print(f"      Denied by: Permissions Boundary")
+            # Prepare simulation input
+            simulation_input = {
+                'PolicySourceArn': principal_arn,
+                'ActionNames': [action],
+                'ResourceArns': resource_arns
+            }
+            
+            if context_entries:
+                simulation_input['ContextEntries'] = context_entries
+            
+            try:
+                # Run simulation for this action
+                response = iam_client.simulate_principal_policy(**simulation_input)
+                
+                # Process results
+                for eval_result in response.get('EvaluationResults', []):
+                    eval_action_name = eval_result['EvalActionName']
+                    eval_decision = eval_result['EvalDecision']
+                    eval_resource_name = eval_result.get('EvalResourceName', '*')
+                    
+                    # Group by decision for more concise output
+                    action_key = f"{eval_decision}:{eval_resource_name}"
+                    if action_key not in action_groups:
+                        action_groups[action_key] = {
+                            'decision': eval_decision,
+                            'resource': eval_resource_name,
+                            'actions': []
+                        }
+                    action_groups[action_key]['actions'].append(eval_action_name)
+                    
+                    # Track failures
+                    if eval_decision != "allowed":
+                        all_allowed = False
+                        all_failed_simulations.append(eval_result)
+            except ClientError as e:
+                print(f"    [WARN] Could not simulate action {action}: {e}")
+                # Assume failure for actions that can't be simulated
+                all_allowed = False
+                all_failed_simulations.append({
+                    'EvalActionName': action,
+                    'EvalDecision': 'implicitly denied',
+                    'EvalResourceName': '*',
+                    'EvalDecisionDetails': [{'EvalDecisionType': 'Error', 'EvalDecisionMessage': str(e)}]
+                })
+        
+        # Display grouped results
+        print("\n  Simulation Results (Grouped):")
+        for group_key, group_data in action_groups.items():
+            decision = group_data['decision']
+            resource = group_data['resource']
+            actions_list = group_data['actions']
+            
+            decision_marker = "[PASS]" if decision == "allowed" else "[FAIL]"
+            print(f"    {decision_marker} Resource: {resource}, Decision: {decision}")
+            print(f"      Actions ({len(actions_list)}): {', '.join(actions_list[:5])}" +
+                  (f" and {len(actions_list) - 5} more..." if len(actions_list) > 5 else ""))
+            
+            # Show denial reasons for failed groups
+            if decision != "allowed" and len(all_failed_simulations) > 0:
+                sample_failure = next((f for f in all_failed_simulations if f['EvalActionName'] in actions_list), None)
+                if sample_failure:
+                    if sample_failure.get('OrganizationsDecisionDetail', {}).get('AllowedByOrganizations') == False:
+                        print(f"      Denied by: Organizations SCP")
+                    if sample_failure.get('PermissionsBoundaryDecisionDetail', {}).get('AllowedByPermissionsBoundary') == False:
+                        print(f"      Denied by: Permissions Boundary")
 
         # Summary
         if all_allowed:
@@ -842,14 +977,161 @@ def simulate_iam_permissions(iam_client, principal_arn: str, actions: List[str],
         else:
             print("\n  [FAILURE] Some simulated actions were DENIED. Review details above.")
         
-        return all_allowed, failed_simulations
+        return all_allowed, all_failed_simulations
 
     except ClientError as e:
-        print(f"  [ERROR] IAM simulation failed: {e}", file=sys.stderr)
-        return False, [{"error": str(e)}]
+        error_msg = f"IAM simulation failed: {e}"
+        print(f"  [ERROR] {error_msg}", file=sys.stderr)
+        if "InvalidInput" in str(e):
+            raise ValidationError(f"Invalid input for IAM simulation: {e}")
+        elif "AccessDenied" in str(e):
+            raise AWSError(f"Access denied when attempting IAM simulation. Ensure your credentials have iam:SimulatePrincipalPolicy permission.")
+        else:
+            raise AWSError(error_msg)
     except Exception as e:
-        print(f"  [ERROR] An unexpected error occurred: {e}", file=sys.stderr)
-        return False, [{"error": str(e)}]
+        error_msg = f"An unexpected error occurred during IAM simulation: {e}"
+        print(f"  [ERROR] {error_msg}", file=sys.stderr)
+        raise AWSError(error_msg)
+
+
+def prompt_user(prompt_text: str, default_value: Optional[str] = None) -> str:
+    """
+    Prompt the user for input with an optional default value.
+    
+    Args:
+        prompt_text: The text to display to the user
+        default_value: Optional default value to use if the user presses Enter
+        
+    Returns:
+        The user's input or the default value if provided and user pressed Enter
+    """
+    if default_value:
+        full_prompt = f"{prompt_text} (default: {default_value}): "
+    else:
+        full_prompt = f"{prompt_text}: "
+    
+    user_input = input(full_prompt).strip()
+    
+    if not user_input and default_value:
+        return default_value
+    
+    return user_input
+
+
+def get_aws_profiles() -> List[str]:
+    """
+    Get a list of available AWS CLI profiles.
+    
+    Returns:
+        List of profile names, or empty list if no profiles found
+    """
+    try:
+        session = boto3.Session()
+        return session.available_profiles
+    except Exception:
+        return []
+
+
+def get_current_identity(session: boto3.Session) -> Dict[str, str]:
+    """
+    Get the current AWS identity information.
+    
+    Args:
+        session: AWS boto3 session
+        
+    Returns:
+        Dictionary with identity information (ARN, Account, UserId)
+        
+    Raises:
+        AWSError: If identity cannot be determined
+    """
+    try:
+        sts_client = session.client('sts')
+        return sts_client.get_caller_identity()
+    except (ClientError, NoCredentialsError, PartialCredentialsError) as e:
+        error_msg = f"Could not determine AWS identity: {e}"
+        print(f"Error: {error_msg}", file=sys.stderr)
+        raise AWSError(error_msg)
+
+
+def list_organizational_units(session: boto3.Session) -> List[Dict[str, str]]:
+    """
+    List organizational units in the AWS Organization.
+    
+    Args:
+        session: AWS boto3 session
+        
+    Returns:
+        List of dictionaries with OU information (Id, Name)
+        
+    Raises:
+        AWSError: If OUs cannot be listed
+    """
+    try:
+        org_client = session.client('organizations')
+        
+        # Get the root ID
+        roots = org_client.list_roots()
+        if not roots.get('Roots'):
+            print("No organization roots found.", file=sys.stderr)
+            return []
+            
+        root_id = roots['Roots'][0]['Id']
+        
+        # List OUs recursively
+        all_ous = []
+        
+        def list_ous_for_parent(parent_id, path=""):
+            ous = org_client.list_organizational_units_for_parent(ParentId=parent_id)
+            for ou in ous.get('OrganizationalUnits', []):
+                ou_path = f"{path}/{ou['Name']}" if path else ou['Name']
+                all_ous.append({
+                    'Id': ou['Id'],
+                    'Name': ou['Name'],
+                    'Path': ou_path
+                })
+                # Recursively list child OUs
+                list_ous_for_parent(ou['Id'], ou_path)
+        
+        list_ous_for_parent(root_id)
+        return all_ous
+        
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'AWSOrganizationsNotInUseException':
+            print("AWS Organizations is not in use for this account.", file=sys.stderr)
+            return []
+        elif e.response['Error']['Code'] == 'AccessDeniedException':
+            print("Access denied when trying to list organizational units.", file=sys.stderr)
+            return []
+        else:
+            error_msg = f"Error listing organizational units: {e}"
+            print(f"Error: {error_msg}", file=sys.stderr)
+            raise AWSError(error_msg)
+    except Exception as e:
+        error_msg = f"Unexpected error listing organizational units: {e}"
+        print(f"Error: {error_msg}", file=sys.stderr)
+        return []
+
+
+def get_template_parameters(template_path: str) -> Dict[str, Dict[str, Any]]:
+    """
+    Extract parameters from a CloudFormation template.
+    
+    Args:
+        template_path: Path to the CloudFormation template file
+        
+    Returns:
+        Dictionary of parameter names to their definitions
+        
+    Raises:
+        TemplateError: If template cannot be read or parsed
+    """
+    try:
+        template = _load_template(template_path)
+        return template.get("Parameters", {})
+    except (TemplateError, ValidationError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        raise
 
 
 def main() -> None:
@@ -878,93 +1160,299 @@ def main() -> None:
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Perform pre-flight checks for CloudFormation template.")
     parser.add_argument("--template-file", required=True, help="Path to the CloudFormation template.")
-    parser.add_argument("--deploying-principal-arn", required=True, help="ARN of the deploying principal.")
-    parser.add_argument("--region", required=True, help="AWS Region for deployment.")
+    parser.add_argument("--deploying-principal-arn", help="ARN of the principal deploying the template. If not provided, will use current identity or prompt.")
+    parser.add_argument("--region", help="AWS Region for deployment. If not provided, will use default region or prompt.")
     parser.add_argument("--parameters", nargs='*', help="CloudFormation parameters as Key=Value pairs.")
     parser.add_argument("--profile", help="AWS CLI profile to use.")
     parser.add_argument("--condition-values", help="JSON string of condition name to boolean value mappings.")
+    parser.add_argument("--non-interactive", action="store_true", help="Run in non-interactive mode (no prompts).")
 
     args = parser.parse_args()
 
+    # Validate template file
+    if not args.template_file:
+        print("Error: --template-file is required", file=sys.stderr)
+        sys.exit(1)
+    
+    if not os.path.isfile(args.template_file):
+        print(f"Error: Template file not found: '{args.template_file}'", file=sys.stderr)
+        sys.exit(1)
+
     try:
+        # Initialize AWS session with profile if provided
         session_params = {}
         if args.profile:
             session_params["profile_name"] = args.profile
+        
+        # Handle AWS profile selection if not provided and in interactive mode
+        if not args.profile and not args.non_interactive:
+            available_profiles = get_aws_profiles()
+            if len(available_profiles) > 1:
+                print("\nAvailable AWS profiles:")
+                for i, profile in enumerate(available_profiles, 1):
+                    print(f"  {i}. {profile}")
+                
+                profile_input = prompt_user("Select a profile number or press Enter to use the default profile", "default")
+                
+                if profile_input != "default":
+                    try:
+                        profile_index = int(profile_input) - 1
+                        if 0 <= profile_index < len(available_profiles):
+                            args.profile = available_profiles[profile_index]
+                            session_params["profile_name"] = args.profile
+                        else:
+                            print(f"Invalid profile number. Using default profile.", file=sys.stderr)
+                    except ValueError:
+                        print(f"Invalid input. Using default profile.", file=sys.stderr)
+        
+        # Initialize region if provided
         if args.region:
             session_params["region_name"] = args.region
-
-        session = boto3.Session(**session_params)
-        iam_client = session.client("iam")
-        sts_client = session.client("sts")
-        print(f"Using AWS region: {session.region_name or 'Default from config'}")
-    except (PartialCredentialsError, NoCredentialsError) as e:
-        print(f"Error: AWS credentials issue. {e}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"Error: Could not initialize AWS session. {e}", file=sys.stderr)
-        sys.exit(1)
-
-    account_id = get_aws_account_id(sts_client)
-
-    # Parse CLI parameters
-    cfn_cli_parameters = {}
-    if args.parameters:
-        for p_item in args.parameters:
-            if "=" not in p_item:
-                print(f"Error: Parameter '{p_item}' is not in Key=Value format.", file=sys.stderr)
-                sys.exit(1)
-            key, value = p_item.split("=", 1)
-            cfn_cli_parameters[key] = value
-    
-    # Parse condition values if provided
-    condition_values = None
-    if args.condition_values:
+            
+        # Create session and clients
         try:
-            condition_values = json.loads(args.condition_values)
-            print(f"Using provided condition values: {condition_values}")
-        except json.JSONDecodeError as e:
-            print(f"Error: Could not parse condition values JSON. {e}", file=sys.stderr)
+            session = boto3.Session(**session_params)
+        except ProfileNotFound:
+            print(f"Error: AWS profile '{args.profile}' not found. Using default profile.", file=sys.stderr)
+            session = boto3.Session()
+            
+        # Get region interactively if not provided
+        if not args.region:
+            session_region = session.region_name
+            if not session_region and not args.non_interactive:
+                regions = [
+                    "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+                    "eu-west-1", "eu-west-2", "eu-west-3", "eu-central-1",
+                    "ap-northeast-1", "ap-northeast-2", "ap-southeast-1", "ap-southeast-2",
+                    "sa-east-1", "ca-central-1"
+                ]
+                print("\nAvailable AWS regions:")
+                for i, region in enumerate(regions, 1):
+                    print(f"  {i}. {region}")
+                
+                region_input = prompt_user("Select a region number or enter a region name", "us-east-1")
+                
+                try:
+                    region_index = int(region_input) - 1
+                    if 0 <= region_index < len(regions):
+                        args.region = regions[region_index]
+                    else:
+                        args.region = region_input
+                except ValueError:
+                    args.region = region_input
+            else:
+                args.region = session_region or "us-east-1"
+                
+        # Create clients with the selected region
+        iam_client = session.client("iam", region_name=args.region)
+        sts_client = session.client("sts", region_name=args.region)
+        print(f"Using AWS region: {args.region}")
+        
+        # Get AWS account ID
+        account_id = get_aws_account_id(sts_client)
+        
+        # Get deploying principal ARN if not provided
+        if not args.deploying_principal_arn:
+            try:
+                identity = get_current_identity(session)
+                args.deploying_principal_arn = identity["Arn"]
+                print(f"Using current identity: {args.deploying_principal_arn}")
+            except AWSError:
+                if args.non_interactive:
+                    print("Error: Could not determine AWS identity and --deploying-principal-arn not provided", file=sys.stderr)
+                    sys.exit(1)
+                else:
+                    args.deploying_principal_arn = prompt_user("Enter the ARN of the principal deploying the template")
+                    if not args.deploying_principal_arn:
+                        print("Error: Deploying principal ARN is required", file=sys.stderr)
+                        sys.exit(1)
+        
+        # Validate ARN format
+        if not args.deploying_principal_arn.startswith("arn:"):
+            print(f"Error: Invalid principal ARN format: {args.deploying_principal_arn}", file=sys.stderr)
             sys.exit(1)
-    
-    # Step 1: Parse Template & Collect Actions
-    actions, resource_arns, prerequisite_checks = parse_template_and_collect_actions(
-        args.template_file, cfn_cli_parameters, account_id, args.region, condition_values
-    )
+        
+        # Get template parameters
+        try:
+            template_parameters = get_template_parameters(args.template_file)
+        except Exception as e:
+            print(f"Error loading template parameters: {e}", file=sys.stderr)
+            sys.exit(1)
 
-    # Step 2: Check Prerequisites
-    prereqs_ok = check_prerequisites(prerequisite_checks, iam_client, args.region)
+        # Parse and prompt for CloudFormation parameters
+        cfn_cli_parameters = {}
+        if args.parameters:
+            for p_item in args.parameters:
+                if "=" not in p_item:
+                    raise InputError(f"Parameter '{p_item}' is not in Key=Value format.")
+                key, value = p_item.split("=", 1)
+                cfn_cli_parameters[key] = value
+        
+        # Prompt for required parameters that are not provided
+        if not args.non_interactive:
+            for param_name, param_def in template_parameters.items():
+                if param_name not in cfn_cli_parameters:
+                    # If parameter has a default value, use it as the default for the prompt
+                    default_value = param_def.get("Default", "")
+                    
+                    # Special handling for OrganizationalUnitId
+                    if param_name == "OrganizationalUnitId" and param_def.get("Type") == "String":
+                        try:
+                            ous = list_organizational_units(session)
+                            if ous:
+                                print("\nAvailable Organizational Units:")
+                                for i, ou in enumerate(ous, 1):
+                                    print(f"  {i}. {ou['Path']} (ID: {ou['Id']})")
+                                
+                                ou_input = prompt_user("Select an OU number or enter an OU ID directly", default_value)
+                                
+                                try:
+                                    ou_index = int(ou_input) - 1
+                                    if 0 <= ou_index < len(ous):
+                                        cfn_cli_parameters[param_name] = ous[ou_index]['Id']
+                                    else:
+                                        cfn_cli_parameters[param_name] = ou_input
+                                except ValueError:
+                                    cfn_cli_parameters[param_name] = ou_input
+                            else:
+                                # No OUs found or error listing them, prompt directly
+                                cfn_cli_parameters[param_name] = prompt_user(
+                                    f"Enter value for parameter '{param_name}' ({param_def.get('Description', '')})",
+                                    default_value
+                                )
+                        except Exception as e:
+                            print(f"Error listing organizational units: {e}", file=sys.stderr)
+                            cfn_cli_parameters[param_name] = prompt_user(
+                                f"Enter value for parameter '{param_name}' ({param_def.get('Description', '')})",
+                                default_value
+                            )
+                    else:
+                        # For other parameters, just prompt with description and default
+                        cfn_cli_parameters[param_name] = prompt_user(
+                            f"Enter value for parameter '{param_name}' ({param_def.get('Description', '')})",
+                            default_value
+                        )
+        
+        # Parse condition values if provided
+        condition_values = None
+        if args.condition_values:
+            try:
+                condition_values = json.loads(args.condition_values)
+                print(f"Using provided condition values: {condition_values}")
+                
+                # Validate condition values are booleans
+                for key, value in condition_values.items():
+                    if not isinstance(value, bool):
+                        raise InputError(f"Condition value for '{key}' must be a boolean (true/false), got: {value}")
+            except json.JSONDecodeError as e:
+                raise InputError(f"Could not parse condition values JSON: {e}")
+        
+        # Print summary of parameters
+        print("\nUsing CloudFormation parameters:")
+        for key, value in cfn_cli_parameters.items():
+            # Mask sensitive values like ExternalID
+            if key in ["ExternalID"]:
+                masked_value = value[:4] + "*" * (len(value) - 4) if len(value) > 4 else "****"
+                print(f"  {key}: {masked_value}")
+            else:
+                print(f"  {key}: {value}")
+        
+        # Step 1: Parse Template & Collect Actions
+        actions, resource_arns, prerequisite_checks = parse_template_and_collect_actions(
+            args.template_file, cfn_cli_parameters, account_id, args.region, condition_values
+        )
 
-    # Step 3: Simulate IAM Permissions
-    context_entries = []
-    if "ExternalID" in cfn_cli_parameters:
-        context_entries.append({
-            "ContextKeyName": "sts:ExternalId",
-            "ContextKeyValues": [cfn_cli_parameters["ExternalID"]],
-            "ContextKeyType": "string"
-        })
+        # Step 2: Check Prerequisites
+        prereqs_ok = check_prerequisites(prerequisite_checks, iam_client, args.region)
 
-    permissions_ok, failed_sims = simulate_iam_permissions(
-        iam_client, args.deploying_principal_arn, actions, resource_arns, context_entries
-    )
+        # Step 3: Simulate IAM Permissions
+        context_entries = []
+        if "ExternalID" in cfn_cli_parameters:
+            context_entries.append({
+                "ContextKeyName": "sts:ExternalId",
+                "ContextKeyValues": [cfn_cli_parameters["ExternalID"]],
+                "ContextKeyType": "string"
+            })
 
-    # Final Summary
-    print("\n--- Pre-flight Check Summary ---")
-    if prereqs_ok:
-        print("[PASS] Prerequisite checks passed or no prerequisites to check.")
-    else:
-        print("[FAIL] Some prerequisite checks failed.")
+        permissions_ok, failed_sims = simulate_iam_permissions(
+            iam_client, args.deploying_principal_arn, actions, resource_arns, context_entries
+        )
 
-    if permissions_ok:
-        print("[PASS] IAM permission simulation indicates all permissions are present.")
-    else:
-        print("[FAIL] IAM permission simulation indicates missing permissions.")
-        print("        Review the simulation details above for denied actions.")
+        # Final Summary
+        print("\n--- Pre-flight Check Summary ---")
+        if prereqs_ok:
+            print("[PASS] Prerequisite checks passed or no prerequisites to check.")
+        else:
+            print("[FAIL] Some prerequisite checks failed.")
 
-    if prereqs_ok and permissions_ok:
-        print("\nPre-flight checks completed successfully.")
-        sys.exit(0)
-    else:
-        print("\nPre-flight checks identified issues. Review failures before deploying.")
+        if permissions_ok:
+            print("[PASS] IAM permission simulation indicates all permissions are present.")
+        else:
+            print("[FAIL] IAM permission simulation indicates missing permissions.")
+            print("        Review the simulation details above for denied actions.")
+
+        if prereqs_ok and permissions_ok:
+            print("\nPre-flight checks completed successfully.")
+            sys.exit(0)
+        else:
+            print("\nPre-flight checks identified issues. Review failures before deploying.")
+            
+            # If in interactive mode, offer to generate a policy document for missing permissions
+            if not args.non_interactive and not permissions_ok and failed_sims:
+                create_policy = prompt_user("Would you like to generate an IAM policy document for the missing permissions? (yes/no)", "yes")
+                if create_policy.lower() in ["yes", "y"]:
+                    policy_doc = {
+                        "Version": "2012-10-17",
+                        "Statement": []
+                    }
+                    
+                    # Group actions by resource
+                    resource_to_actions = {}
+                    for result in failed_sims:
+                        action = result['EvalActionName']
+                        resource = result.get('EvalResourceName', '*')
+                        
+                        if resource not in resource_to_actions:
+                            resource_to_actions[resource] = []
+                        resource_to_actions[resource].append(action)
+                    
+                    # Create policy statements
+                    for resource, actions in resource_to_actions.items():
+                        policy_doc["Statement"].append({
+                            "Effect": "Allow",
+                            "Action": sorted(actions),
+                            "Resource": resource
+                        })
+                    
+                    print("\nSuggested IAM Policy Document:")
+                    print(json.dumps(policy_doc, indent=2))
+                    print("\nYou can attach this policy to the deploying principal to grant the missing permissions.")
+            
+            sys.exit(1)
+            
+    except TemplateError as e:
+        print(f"Template Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except ValidationError as e:
+        print(f"Validation Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except InputError as e:
+        print(f"Input Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except AWSError as e:
+        print(f"AWS Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except ResourceError as e:
+        print(f"Resource Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except (PartialCredentialsError, NoCredentialsError) as e:
+        print(f"AWS Credentials Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nOperation cancelled by user.", file=sys.stderr)
+        sys.exit(130)
+    except Exception as e:
+        print(f"Unexpected Error: {e}", file=sys.stderr)
         sys.exit(1)
 
 
