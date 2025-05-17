@@ -279,6 +279,62 @@ pip install weasyprint
 
 For more information on WeasyPrint installation requirements, visit: https://doc.courtbouillon.org/weasyprint/stable/first_steps.html
 
+### Enhanced Report Logic
+
+The report generation logic has been improved to provide clearer status information:
+
+- **Independent Section Status Display**: Sections 2.1 (Prerequisite Checks) and 2.2 (Deploying Principal IAM Simulation) now clearly display their own independent PASS/FAIL statuses.
+- **IAM-Focused Overall Status**: The overall report status is now primarily determined by the IAM simulation results (Section 2.2). If the IAM simulation passes, the overall status is PASS, even if prerequisite checks fail.
+- **Explicit IAM Status Indication**: When IAM simulation passes, the cover page and executive summary explicitly indicate "Deploying Principal IAM Simulation: PASS".
+- **Nuanced Summary Conclusions**: The executive summary now provides more detailed conclusions based on the combination of IAM simulation and prerequisite check results.
+
+This enhancement allows users to quickly identify if their IAM permissions are sufficient, which is often the most critical factor for successful CloudFormation deployments.
+
+#### Testing and Verification
+
+The enhanced report logic was thoroughly tested using a deny policy approach:
+
+1. **Test Deny Policy Creation**: A policy was created to explicitly deny specific CloudFormation-related permissions:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Deny",
+         "Action": ["cloudformation:CreateStack", "cloudformation:UpdateStack"],
+         "Resource": "*"
+       },
+       {
+         "Effect": "Deny",
+         "Action": ["iam:PassRole"],
+         "Resource": "arn:aws:iam::*:role/*"
+       },
+       {
+         "Effect": "Deny",
+         "Action": ["s3:CreateBucket", "s3:PutObject"],
+         "Resource": "*"
+       }
+     ]
+   }
+   ```
+
+2. **Policy Application**: This deny policy was applied to test IAM principals.
+
+3. **Report Generation**: The pre-flight check tool was run against various CloudFormation templates with the deny policy in place.
+
+4. **Verification Process**:
+   - Confirmed that Section 2.1 (Prerequisite Checks) displayed its own status correctly.
+   - Confirmed that Section 2.2 (IAM Simulation) correctly identified and reported the denied permissions.
+   - Verified that the overall status was determined by the IAM simulation results.
+   - Checked that the generated IAM policy recommendations correctly included the denied permissions.
+   - Tested various combinations of passing/failing prerequisites and IAM permissions to ensure correct reporting.
+
+5. **Results**: The testing confirmed that:
+   - The report correctly identifies denied permissions and recommends appropriate remediation.
+   - Sections 2.1 and 2.2 display their own independent statuses.
+   - The overall status is determined by the IAM simulation results.
+   - The executive summary provides clear, nuanced conclusions based on all check results.
+
 ### AWS Configuration Auto-Detection
 
 The tool now automatically detects and uses:
