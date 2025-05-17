@@ -201,6 +201,10 @@ def handle_pass_role(properties: Dict[str, Any], prop_key: str, prop_actions: Li
     This function identifies when a resource property requires the iam:PassRole
     permission and resolves the ARN of the role that needs to be passed.
     
+    The deploying principal needs iam:PassRole permission for:
+    1. Roles that are referenced by ARN but not created in the template
+    2. Roles that are created in the template and passed to services
+    
     Args:
         properties: Resource properties dictionary
         prop_key: The property key (e.g., "Role")
@@ -214,18 +218,30 @@ def handle_pass_role(properties: Dict[str, Any], prop_key: str, prop_actions: Li
         The ARN to pass role to, or None if not applicable
     """
     if prop_key == "Role" and "iam:PassRole" in prop_actions:
+        role_value = properties[prop_key]
         role_arn_to_pass = resolve_value(
-            properties[prop_key],
+            role_value,
             resolved_cfn_parameters,
             account_id,
             region,
             resources
         )
         
+        # Check if this is a reference to a role defined in the template
+        is_template_role = False
+        if isinstance(role_value, dict) and "Ref" in role_value:
+            ref_value = role_value["Ref"]
+            if ref_value in resources and resources[ref_value].get("Type") == "AWS::IAM::Role":
+                is_template_role = True
+                print(f"    Info: Role {ref_value} is defined in the template")
+        
+        # If it's an external role ARN, return it directly
         if isinstance(role_arn_to_pass, str) and role_arn_to_pass.startswith("arn:"):
+            print(f"    Info: External role ARN detected: {role_arn_to_pass}")
             return role_arn_to_pass
         else:
-            # Create a placeholder ARN
+            # For roles defined in the template or other references, create a placeholder ARN
+            # The deploying principal still needs iam:PassRole permission for these roles
             return f"arn:aws:iam::{account_id}:role/{role_arn_to_pass}-*"
     
     return None

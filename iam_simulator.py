@@ -32,10 +32,17 @@ def simulate_iam_permissions(iam_client, principal_arn: str, actions: List[str],
     - Processing and displaying the results
     - Identifying specific reasons for permission denials (e.g., SCPs, permission boundaries)
     
+    Note: This function only simulates permissions needed by the deploying principal,
+    not permissions needed by resources created within the stack. The deploying principal
+    needs permissions to:
+    1. Create and manage the CloudFormation stack
+    2. Pass roles to services (iam:PassRole)
+    3. Access prerequisite resources that already exist
+    
     Args:
         iam_client: AWS IAM client
         principal_arn: ARN of the principal to simulate permissions for
-        actions: List of IAM actions to simulate
+        actions: List of IAM actions to simulate (only deploying principal actions)
         resource_arns: List of resource ARNs to simulate against
         context_entries: Optional list of context entries for the simulation
                         (e.g., for condition keys like aws:RequestTag)
@@ -49,7 +56,7 @@ def simulate_iam_permissions(iam_client, principal_arn: str, actions: List[str],
         AWSError: If there are issues with AWS API calls
         ValidationError: If input parameters are invalid
     """
-    print("\n--- Simulating IAM Permissions ---")
+    print("\n--- Simulating IAM Permissions for Deploying Principal ---")
     
     # Validate inputs
     if not principal_arn or not principal_arn.startswith("arn:"):
@@ -58,6 +65,7 @@ def simulate_iam_permissions(iam_client, principal_arn: str, actions: List[str],
     print(f"  Principal ARN for Simulation: {principal_arn}")
     print(f"  Actions to Simulate ({len(actions)}): {actions}")
     print(f"  Resource ARNs for Simulation ({len(resource_arns)}): {resource_arns if resource_arns else ['*']}")
+    print(f"  Note: Only simulating permissions needed by the deploying principal, not resources created by the template")
 
     # Skip simulation if no actions to simulate
     if not actions:
@@ -150,12 +158,23 @@ def simulate_iam_permissions(iam_client, principal_arn: str, actions: List[str],
                         print(f"      Denied by: Organizations SCP")
                     if sample_failure.get('PermissionsBoundaryDecisionDetail', {}).get('AllowedByPermissionsBoundary') == False:
                         print(f"      Denied by: Permissions Boundary")
+                    
+                    # Categorize the permission type
+                    action_name = sample_failure['EvalActionName']
+                    if action_name.startswith("cloudformation:"):
+                        print(f"      Permission Type: CloudFormation Stack Management")
+                    elif action_name == "iam:PassRole":
+                        print(f"      Permission Type: IAM Role Passing")
+                    else:
+                        print(f"      Permission Type: Prerequisite Resource Access")
 
         # Summary
         if all_allowed:
-            print("\n  [SUCCESS] All simulated actions are allowed for the principal.")
+            print("\n  [SUCCESS] All simulated actions are allowed for the deploying principal.")
         else:
-            print("\n  [FAILURE] Some simulated actions were DENIED. Review details above.")
+            print("\n  [FAILURE] Some simulated actions were DENIED for the deploying principal. Review details above.")
+            print("  Note: These are only the permissions needed by the deploying principal to manage the stack")
+            print("        and access prerequisite resources, not permissions for resources created by the stack.")
         
         return all_allowed, all_failed_simulations
 

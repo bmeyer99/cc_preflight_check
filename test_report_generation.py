@@ -134,18 +134,47 @@ def main():
                     policy.get("Version") == "2012-10-17" and
                     isinstance(policy.get("Statement"), list)):
                     
-                    # Check if the policy is properly condensed
-                    is_condensed = False
-                    for statement in policy.get("Statement", []):
-                        # Check if any statement has a list of resources
-                        if isinstance(statement.get("Resource"), list) and len(statement.get("Resource", [])) > 1:
-                            is_condensed = True
-                            break
+                    # Check if the policy is properly structured with correct resource types
+                    cloudformation_actions_correct = True
+                    passrole_actions_correct = True
                     
-                    if is_condensed:
-                        print("IAM policy JSON validation: PASSED (Condensed format verified)")
+                    for statement in policy.get("Statement", []):
+                        actions = statement.get("Action", [])
+                        resource = statement.get("Resource")
+                        
+                        # Convert single action to list for consistent processing
+                        if isinstance(actions, str):
+                            actions = [actions]
+                        
+                        # Check CloudFormation actions
+                        if any(action.startswith("cloudformation:") for action in actions):
+                            # CloudFormation actions should use CloudFormation stack ARNs or "*"
+                            if isinstance(resource, str):
+                                if not (resource == "*" or resource.startswith("arn:aws:cloudformation:")):
+                                    cloudformation_actions_correct = False
+                            elif isinstance(resource, list):
+                                for res in resource:
+                                    if not (res == "*" or res.startswith("arn:aws:cloudformation:")):
+                                        cloudformation_actions_correct = False
+                        
+                        # Check PassRole actions
+                        if "iam:PassRole" in actions:
+                            # PassRole actions should use IAM role ARNs
+                            if isinstance(resource, str):
+                                if not resource.startswith("arn:aws:iam:") and resource != "*":
+                                    passrole_actions_correct = False
+                            elif isinstance(resource, list):
+                                for res in resource:
+                                    if not res.startswith("arn:aws:iam:") and res != "*":
+                                        passrole_actions_correct = False
+                    
+                    if cloudformation_actions_correct and passrole_actions_correct:
+                        print("IAM policy JSON validation: PASSED (Correct resource types for actions verified)")
                     else:
-                        print("IAM policy JSON validation: PASSED (Note: No resource grouping detected in this example)")
+                        if not cloudformation_actions_correct:
+                            print("IAM policy JSON validation: FAILED - CloudFormation actions not associated with correct resources")
+                        if not passrole_actions_correct:
+                            print("IAM policy JSON validation: FAILED - PassRole actions not associated with correct resources")
                     
                     # Print the policy for demonstration
                     print("\nGenerated IAM Policy:")

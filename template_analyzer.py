@@ -34,6 +34,7 @@ def parse_template_and_collect_actions(template_path: str, cfn_parameters: Dict[
     4. For each resource, determines the required IAM actions based on resource type and properties
     5. Constructs ARNs for each resource for IAM policy simulation
     6. Identifies any prerequisite resources that need to exist before deployment
+    7. Distinguishes between permissions needed by the deploying principal vs. resources created by the template
     
     Args:
         template_path: Path to the CloudFormation template file
@@ -54,8 +55,20 @@ def parse_template_and_collect_actions(template_path: str, cfn_parameters: Dict[
         ResourceError: If there are issues with resource processing
     """
     print(f"\nParsing template: {template_path}...")
-    actions_to_simulate: Set[str] = set()
-    resource_arns_for_simulation: Set[str] = set()
+    # Actions needed by the deploying principal (to create/manage the stack and access prerequisites)
+    deploying_principal_actions: Set[str] = set([
+        "cloudformation:CreateStack",
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeStackEvents",
+        "cloudformation:DescribeStackResources"
+    ])
+    deploying_principal_resource_arns: Set[str] = set()
+    
+    # Actions needed by resources created within the stack (not needed by deploying principal)
+    resource_actions: Set[str] = set()
+    resource_arns: Set[str] = set()
+    
+    # Prerequisite resources that must exist before deployment
     prerequisite_checks: List[Dict[str, Any]] = []
 
     try:
@@ -98,6 +111,8 @@ def parse_template_and_collect_actions(template_path: str, cfn_parameters: Dict[
     print(f"Resolved CloudFormation Parameters for pre-flight checks: {resolved_cfn_parameters}")
 
     # Process each resource in the template
+    template_resources = set()  # Track resources defined in the template
+    
     for logical_id, resource_def in resources.items():
         resource_type = resource_def.get("Type")
         if not resource_type:
@@ -105,6 +120,9 @@ def parse_template_and_collect_actions(template_path: str, cfn_parameters: Dict[
             continue
             
         properties = resource_def.get("Properties", {})
+        
+        # Track this resource as defined in the template
+        template_resources.add(logical_id)
         
         # Check if resource has a Condition and evaluate it
         if "Condition" in resource_def:
@@ -131,14 +149,12 @@ def parse_template_and_collect_actions(template_path: str, cfn_parameters: Dict[
             # Handle custom resources
             if map_entry.get("type") == "CustomResource":
                 print(f"    Info: Custom Resource. Primary permissions are tied to its handler (Lambda).")
-                actions_to_simulate.add("cloudformation:CreateStack")
+                deploying_principal_actions.add("cloudformation:CreateStack")
                 continue
 
-            # 1. Add generic actions for the resource type - optimize by using a set update
+            # 1. Get generic actions for the resource type
             generic_actions = map_entry.get("generic_actions", [])
-            if generic_actions:
-                actions_to_simulate.update(generic_actions)
-
+            
             # 2. Get ARN pattern for this resource type
             arn_pattern_str = map_entry.get("arn_pattern", "arn:aws:*:{region}:{accountId}:{resourceLogicalIdPlaceholder}/*")
             
@@ -163,53 +179,96 @@ def parse_template_and_collect_actions(template_path: str, cfn_parameters: Dict[
                 region
             )
             
-            resource_arns_for_simulation.add(current_arn)
-
-            # 5. Check properties for specific actions - optimize property lookup
+            # 5. Check if this is a reference to an existing resource (prerequisite)
+            is_prerequisite = False
+            for prop_name, prop_value in properties.items():
+                if isinstance(prop_value, str) and prop_value.startswith("arn:aws:"):
+                    # This is a reference to an existing resource
+                    is_prerequisite = True
+                    # Add a prerequisite check for this resource
+                    prerequisite_checks.append({
+                        "type": f"{resource_type.lower().replace('::', '_')}_exists",
+                        "arn": prop_value,
+                        "description": f"Referenced {resource_type} in {logical_id}.{prop_name}"
+                    })
+                    # The deploying principal needs permissions to access this resource
+                    deploying_principal_actions.update(generic_actions)
+                    deploying_principal_resource_arns.add(current_arn)
+                    break
+            
+            # If not a prerequisite, it's a resource created by the template
+            if not is_prerequisite:
+                # These actions are needed by CloudFormation, not the deploying principal
+                resource_actions.update(generic_actions)
+                resource_arns.add(current_arn)
+            
+            # 6. Check properties for specific actions
             property_actions_map = map_entry.get("property_actions", {})
             if property_actions_map:
                 # Only iterate through properties that exist in the property_actions_map
                 for prop_key in set(properties.keys()).intersection(property_actions_map.keys()):
                     prop_actions = property_actions_map[prop_key]
-                    actions_to_simulate.update(prop_actions)
                     
-                    # Handle PassRole permissions
-                    pass_role_arn = handle_pass_role(
-                        properties,
-                        prop_key,
-                        prop_actions,
-                        resolved_cfn_parameters,
-                        account_id,
-                        region,
-                        resources
-                    )
+                    # Handle PassRole permissions - these are always needed by the deploying principal
+                    if "iam:PassRole" in prop_actions:
+                        pass_role_arn = handle_pass_role(
+                            properties,
+                            prop_key,
+                            prop_actions,
+                            resolved_cfn_parameters,
+                            account_id,
+                            region,
+                            resources
+                        )
+                        
+                        if pass_role_arn:
+                            deploying_principal_actions.add("iam:PassRole")
+                            deploying_principal_resource_arns.add(pass_role_arn)
+                            print(f"    Info: Added PassRole ARN for deploying principal: {pass_role_arn}")
                     
-                    if pass_role_arn:
-                        resource_arns_for_simulation.add(pass_role_arn)
-                        print(f"    Info: Added potential PassRole ARN for simulation: {pass_role_arn}")
+                    # Add other property actions to the appropriate category
+                    if is_prerequisite:
+                        deploying_principal_actions.update(prop_actions)
+                    else:
+                        resource_actions.update(prop_actions)
             
-            # 6. Handle Tags - common across many resources
+            # 7. Handle Tags - common across many resources
             if "Tags" in properties and resource_type.count("::") >= 2:
                 service_prefix = resource_type.split("::")[1].lower()
                 tag_action = f"{service_prefix}:TagResource"
                 create_tags_action = f"{service_prefix}:CreateTags"
                 
-                # Optimize tag action check
+                # Check if tag action is already included
                 generic_actions_set = set(map_entry.get("generic_actions", []))
                 has_tag_action = (
-                    tag_action in actions_to_simulate or
-                    create_tags_action in actions_to_simulate or
+                    tag_action in resource_actions or
+                    tag_action in deploying_principal_actions or
+                    create_tags_action in resource_actions or
+                    create_tags_action in deploying_principal_actions or
                     any(action.endswith("Tagging") or action.startswith(f"{service_prefix}:Tag")
                         for action in generic_actions_set)
                 )
                 
                 if not has_tag_action:
-                    actions_to_simulate.add(tag_action)
-                    print(f"    Info: Added generic '{tag_action}' for Tags.")
+                    if is_prerequisite:
+                        deploying_principal_actions.add(tag_action)
+                    else:
+                        resource_actions.add(tag_action)
+                    print(f"    Info: Added '{tag_action}' for Tags.")
         else:
             # Unknown resource type
             print(f"    Warning: No specific IAM action mapping found for resource type: {resource_type}.",
                   file=sys.stderr)
-            actions_to_simulate.add("cloudformation:CreateStack")
+            deploying_principal_actions.add("cloudformation:CreateStack")
+    
+    # Combine actions and resource ARNs for simulation
+    # We only simulate permissions for the deploying principal
+    actions_to_simulate = deploying_principal_actions
+    resource_arns_for_simulation = deploying_principal_resource_arns
+    
+    print("\nPermissions Summary:")
+    print(f"  Deploying Principal Actions: {len(deploying_principal_actions)}")
+    print(f"  Resource Actions (not simulated): {len(resource_actions)}")
+    print(f"  Prerequisite Checks: {len(prerequisite_checks)}")
 
     return sorted(list(actions_to_simulate)), sorted(list(resource_arns_for_simulation)), prerequisite_checks

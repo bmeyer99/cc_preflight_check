@@ -23,8 +23,9 @@ def check_prerequisites(checks: List[Dict[str, Any]], iam_client, region: str) -
     deployment, such as IAM roles referenced by ARN. This function verifies
     that these prerequisite resources exist and are properly configured.
     
-    Currently supports checking for:
+    Supports checking for:
     - IAM role existence
+    - Other AWS resources referenced by ARN
     
     Args:
         checks: List of prerequisite checks to perform
@@ -54,6 +55,7 @@ def check_prerequisites(checks: List[Dict[str, Any]], iam_client, region: str) -
         description = check.get('description', check['type'])
         print(f"  Checking: {description} (ARN: {check['arn']})")
         
+        # Handle IAM role checks
         if check["type"] == "iam_role_exists":
             try:
                 # Extract role name from ARN
@@ -77,6 +79,17 @@ def check_prerequisites(checks: List[Dict[str, Any]], iam_client, region: str) -
                 error_msg = f"Unexpected error checking prerequisite: {e}"
                 print(f"    [ERROR] {error_msg}")
                 all_prereqs_ok = False
+        
+        # Handle AWS resource checks for other resource types
+        elif check["type"].endswith("_exists"):
+            # For now, we just log these checks but don't actually verify them
+            # In a future enhancement, we could add specific checks for different resource types
+            # using the appropriate AWS service clients
+            print(f"    [INFO] Prerequisite resource check for {check['arn']} (verification not implemented)")
+            
+            # The deploying principal will need permissions to access this resource
+            # This is handled in template_analyzer.py where we add the necessary actions
+            # to the deploying_principal_actions set
         else:
             print(f"    [WARN] Unknown prerequisite check type: {check['type']}")
     

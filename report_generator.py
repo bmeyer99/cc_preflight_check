@@ -32,8 +32,14 @@ def generate_iam_policy_json(
     """
     Generate a JSON file containing the consolidated IAM policy for all identified missing permissions.
     
-    The policy is condensed by grouping statements with identical "Effect" and "Action" lists
-    into a single statement with multiple resources.
+    The policy is structured according to AWS best practices:
+    1. CloudFormation actions use CloudFormation stack ARNs as resources
+    2. IAM PassRole actions use IAM Role ARNs as resources
+    3. Other service actions use their appropriate resource ARNs
+    
+    Note: This policy only includes permissions needed by the deploying principal to manage
+    the CloudFormation stack and access prerequisite resources, not permissions for resources
+    created by the stack.
     
     Args:
         failed_simulations: List of failed simulation results
@@ -42,47 +48,58 @@ def generate_iam_policy_json(
     Returns:
         Path to the generated JSON file
     """
-    # First, group actions by resource
-    resource_to_actions = {}
+    # Group actions by service type and resource
+    service_resource_to_actions = {}
+    
     for result in failed_simulations:
         action = result.get('EvalActionName', '')
         resource = result.get('EvalResourceName', '*')
         
-        if resource not in resource_to_actions:
-            resource_to_actions[resource] = []
-        resource_to_actions[resource].append(action)
-    
-    # Now, reverse the mapping to group resources by effect and actions
-    # Using (effect, tuple(sorted_actions)) as key for the dictionary
-    effect_actions_to_resources = {}
-    for resource, actions_list in resource_to_actions.items():
-        # Sort actions to ensure consistent grouping
-        sorted_actions = tuple(sorted(actions_list))
-        # Default effect is "Allow" for all statements in this context
-        effect = "Allow"
+        # Extract service from action (e.g., 'cloudformation' from 'cloudformation:CreateStack')
+        service = action.split(':')[0] if ':' in action else 'unknown'
         
-        key = (effect, sorted_actions)
-        if key not in effect_actions_to_resources:
-            effect_actions_to_resources[key] = []
-        effect_actions_to_resources[key].append(resource)
+        # Special handling for CloudFormation actions
+        if service == 'cloudformation':
+            # If resource is not a CloudFormation stack ARN, use a generic CloudFormation stack ARN
+            if not resource.startswith('arn:aws:cloudformation:'):
+                resource = '*'  # Use '*' as a fallback for CloudFormation actions
+        
+        # Create a key that combines service and resource type
+        key = (service, resource)
+        
+        if key not in service_resource_to_actions:
+            service_resource_to_actions[key] = []
+        service_resource_to_actions[key].append(action)
     
-    # Generate condensed policy document
+    # Generate policy document with properly structured statements
     policy_doc = {
         "Version": "2012-10-17",
         "Statement": []
     }
     
-    # Create statements with grouped resources
-    for (effect, actions_tuple), resources in effect_actions_to_resources.items():
-        # If there's only one resource, use a string
-        # If there are multiple resources, use an array
-        resource_value = resources[0] if len(resources) == 1 else resources
+    # Group similar services and resources together
+    service_groups = {}
+    
+    for (service, resource), actions_list in service_resource_to_actions.items():
+        if service not in service_groups:
+            service_groups[service] = {}
         
-        policy_doc["Statement"].append({
-            "Effect": effect,
-            "Action": list(actions_tuple),
-            "Resource": resource_value
-        })
+        if resource not in service_groups[service]:
+            service_groups[service][resource] = []
+        
+        service_groups[service][resource].extend(actions_list)
+    
+    # Create statements for each service group
+    for service, resources in service_groups.items():
+        for resource, actions in resources.items():
+            # Sort actions for consistent output
+            sorted_actions = sorted(set(actions))
+            
+            policy_doc["Statement"].append({
+                "Effect": "Allow",
+                "Action": sorted_actions,
+                "Resource": resource
+            })
     
     # Create directory if it doesn't exist
     output_dir = os.path.dirname(output_file)
@@ -94,6 +111,7 @@ def generate_iam_policy_json(
         json.dump(policy_doc, f, indent=2)
     
     print(f"IAM policy JSON generated: {output_file}")
+    print(f"Note: This policy only includes permissions needed by the deploying principal")
     return output_file
 
 
@@ -112,11 +130,19 @@ def generate_pdf_report(
     """
     Generate a PDF report and IAM policy JSON file from CloudFormation pre-flight check results.
     
+    The report and policy focus on permissions needed by the deploying principal to:
+    1. Create and manage the CloudFormation stack
+    2. Pass roles to services (iam:PassRole)
+    3. Access prerequisite resources that already exist
+    
+    It does NOT include permissions needed by resources created within the stack,
+    as those are handled by CloudFormation.
+    
     Args:
         template_file: Path to the CloudFormation template
         principal_arn: ARN of the principal deploying the template
         region: AWS region for deployment
-        actions: List of IAM actions required
+        actions: List of IAM actions required by the deploying principal
         resource_arns: List of resource ARNs
         prereq_checks: List of prerequisite checks performed
         prereqs_ok: Boolean indicating if all prerequisite checks passed
@@ -241,47 +267,58 @@ def _generate_html_content(
     # Count failed actions
     failed_actions = len(failed_simulations)
     
-    # First, group actions by resource
-    resource_to_actions = {}
+    # Group actions by service type and resource
+    service_resource_to_actions = {}
+    
     for result in failed_simulations:
         action = result.get('EvalActionName', '')
         resource = result.get('EvalResourceName', '*')
         
-        if resource not in resource_to_actions:
-            resource_to_actions[resource] = []
-        resource_to_actions[resource].append(action)
-    
-    # Now, reverse the mapping to group resources by effect and actions
-    # Using (effect, tuple(sorted_actions)) as key for the dictionary
-    effect_actions_to_resources = {}
-    for resource, actions_list in resource_to_actions.items():
-        # Sort actions to ensure consistent grouping
-        sorted_actions = tuple(sorted(actions_list))
-        # Default effect is "Allow" for all statements in this context
-        effect = "Allow"
+        # Extract service from action (e.g., 'cloudformation' from 'cloudformation:CreateStack')
+        service = action.split(':')[0] if ':' in action else 'unknown'
         
-        key = (effect, sorted_actions)
-        if key not in effect_actions_to_resources:
-            effect_actions_to_resources[key] = []
-        effect_actions_to_resources[key].append(resource)
+        # Special handling for CloudFormation actions
+        if service == 'cloudformation':
+            # If resource is not a CloudFormation stack ARN, use a generic CloudFormation stack ARN
+            if not resource.startswith('arn:aws:cloudformation:'):
+                resource = '*'  # Use '*' as a fallback for CloudFormation actions
+        
+        # Create a key that combines service and resource type
+        key = (service, resource)
+        
+        if key not in service_resource_to_actions:
+            service_resource_to_actions[key] = []
+        service_resource_to_actions[key].append(action)
     
-    # Generate condensed policy document
+    # Generate policy document with properly structured statements
     policy_doc = {
         "Version": "2012-10-17",
         "Statement": []
     }
     
-    # Create statements with grouped resources
-    for (effect, actions_tuple), resources in effect_actions_to_resources.items():
-        # If there's only one resource, use a string
-        # If there are multiple resources, use an array
-        resource_value = resources[0] if len(resources) == 1 else resources
+    # Group similar services and resources together
+    service_groups = {}
+    
+    for (service, resource), actions_list in service_resource_to_actions.items():
+        if service not in service_groups:
+            service_groups[service] = {}
         
-        policy_doc["Statement"].append({
-            "Effect": effect,
-            "Action": list(actions_tuple),
-            "Resource": resource_value
-        })
+        if resource not in service_groups[service]:
+            service_groups[service][resource] = []
+        
+        service_groups[service][resource].extend(actions_list)
+    
+    # Create statements for each service group
+    for service, resources in service_groups.items():
+        for resource, actions in resources.items():
+            # Sort actions for consistent output
+            sorted_actions = sorted(set(actions))
+            
+            policy_doc["Statement"].append({
+                "Effect": "Allow",
+                "Action": sorted_actions,
+                "Resource": resource
+            })
     
     # Format policy as JSON string with indentation
     policy_json = json.dumps(policy_doc, indent=2)
@@ -509,7 +546,8 @@ def _generate_html_content(
         if not permissions_ok:
             html += """
             <h3>IAM Permissions</h3>
-            <p>Attach the following IAM policy to the principal to grant the missing permissions:</p>
+            <p>Attach the following IAM policy to the principal to grant the missing permissions needed for CloudFormation stack deployment:</p>
+            <p><em>Note: This policy only includes permissions needed by the deploying principal to manage the CloudFormation stack and access prerequisite resources. It does not include permissions for resources created by the stack, as those are handled by CloudFormation.</em></p>
             <pre class="policy-json">
 """
             
@@ -517,7 +555,12 @@ def _generate_html_content(
             
             html += """
             </pre>
-            <p>This policy grants only the specific permissions that were identified as missing during the pre-flight check.</p>
+            <p>This policy grants only the specific permissions that the deploying principal needs to:</p>
+            <ul>
+                <li>Create and manage the CloudFormation stack</li>
+                <li>Pass roles to AWS services (iam:PassRole) when required</li>
+                <li>Access any prerequisite resources that must exist before deployment</li>
+            </ul>
 """
     
     html += """
