@@ -198,9 +198,10 @@ def parse_template_and_collect_actions(template_path: str, cfn_parameters: Dict[
             
             # If not a prerequisite, it's a resource created by the template
             if not is_prerequisite:
-                # These actions are needed by CloudFormation, not the deploying principal
-                resource_actions.update(generic_actions)
-                resource_arns.add(current_arn)
+                # These actions are needed by CloudFormation on behalf of the deploying principal
+                # to create and manage the resources defined in the template
+                deploying_principal_actions.update(generic_actions)
+                deploying_principal_resource_arns.add(current_arn)
             
             # 6. Check properties for specific actions
             property_actions_map = map_entry.get("property_actions", {})
@@ -227,10 +228,9 @@ def parse_template_and_collect_actions(template_path: str, cfn_parameters: Dict[
                             print(f"    Info: Added PassRole ARN for deploying principal: {pass_role_arn}")
                     
                     # Add other property actions to the appropriate category
-                    if is_prerequisite:
-                        deploying_principal_actions.update(prop_actions)
-                    else:
-                        resource_actions.update(prop_actions)
+                    # All property actions should be assigned to the deploying principal
+                    # since CloudFormation needs these permissions to create/configure resources
+                    deploying_principal_actions.update(prop_actions)
             
             # 7. Handle Tags - common across many resources
             if "Tags" in properties and resource_type.count("::") >= 2:
@@ -250,10 +250,9 @@ def parse_template_and_collect_actions(template_path: str, cfn_parameters: Dict[
                 )
                 
                 if not has_tag_action:
-                    if is_prerequisite:
-                        deploying_principal_actions.add(tag_action)
-                    else:
-                        resource_actions.add(tag_action)
+                    # Tag actions are always needed by the deploying principal
+                    # since CloudFormation applies tags during resource creation
+                    deploying_principal_actions.add(tag_action)
                     print(f"    Info: Added '{tag_action}' for Tags.")
         else:
             # Unknown resource type
@@ -268,7 +267,11 @@ def parse_template_and_collect_actions(template_path: str, cfn_parameters: Dict[
     
     print("\nPermissions Summary:")
     print(f"  Deploying Principal Actions: {len(deploying_principal_actions)}")
-    print(f"  Resource Actions (not simulated): {len(resource_actions)}")
+    print(f"  Resource Actions (not simulated, for reference only): {len(resource_actions)}")
     print(f"  Prerequisite Checks: {len(prerequisite_checks)}")
+    
+    # Log a note about the change in behavior
+    print("\nNote: All actions required to create and manage resources defined in the template")
+    print("      are now included in the deploying principal actions for simulation.")
 
     return sorted(list(actions_to_simulate)), sorted(list(resource_arns_for_simulation)), prerequisite_checks

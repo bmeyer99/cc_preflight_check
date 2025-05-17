@@ -277,5 +277,110 @@ RESOURCE_ACTION_MAP: Dict[str, Dict[str, Any]] = {
             "Tag": []
         }
     },
-    "Custom::EmptyBucketDetails": { "type": "CustomResource" }
+    "Custom::EmptyBucketDetails": { "type": "CustomResource" },
+    
+    # EC2 resources needed for Cortex Cloud ADS (Agentless Workload Scanning)
+    "AWS::EC2::Snapshot": {
+        "generic_actions": [
+            "ec2:CreateSnapshot",
+            "ec2:DeleteSnapshot",
+            "ec2:ModifySnapshotAttribute",
+            "ec2:DescribeSnapshots",
+            "ec2:CopySnapshot",
+            "ec2:CreateTags"
+        ],
+        "arn_pattern": "arn:aws:ec2:{region}:{accountId}:snapshot/{snapshotId}",
+        "property_actions": {
+            "Tags": ["ec2:CreateTags"]
+        },
+        "operation_actions": {
+            "Create": ["ec2:CreateSnapshot", "ec2:CreateTags"],
+            "Update": ["ec2:ModifySnapshotAttribute"],
+            "Delete": ["ec2:DeleteSnapshot"],
+            "Tag": ["ec2:CreateTags"]
+        }
+    },
+    
+    # RDS resources needed for Cortex Cloud DSPM (Data Security Posture Management)
+    "AWS::RDS::DBSnapshot": {
+        "generic_actions": [
+            "rds:CreateDBSnapshot",
+            "rds:DeleteDBSnapshot",
+            "rds:DescribeDBSnapshots",
+            "rds:AddTagsToResource"
+        ],
+        "arn_pattern": "arn:aws:rds:{region}:{accountId}:snapshot:{snapshotName}",
+        "property_actions": {
+            "Tags": ["rds:AddTagsToResource"]
+        },
+        "operation_actions": {
+            "Create": ["rds:CreateDBSnapshot", "rds:AddTagsToResource"],
+            "Update": ["rds:AddTagsToResource"],
+            "Delete": ["rds:DeleteDBSnapshot"],
+            "Tag": ["rds:AddTagsToResource"]
+        }
+    },
+    
+    "AWS::RDS::DBClusterSnapshot": {
+        "generic_actions": [
+            "rds:CreateDBClusterSnapshot",
+            "rds:DeleteDBClusterSnapshot",
+            "rds:DescribeDBClusterSnapshots",
+            "rds:AddTagsToResource"
+        ],
+        "arn_pattern": "arn:aws:rds:{region}:{accountId}:cluster-snapshot:{snapshotName}",
+        "property_actions": {
+            "Tags": ["rds:AddTagsToResource"]
+        },
+        "operation_actions": {
+            "Create": ["rds:CreateDBClusterSnapshot", "rds:AddTagsToResource"],
+            "Update": ["rds:AddTagsToResource"],
+            "Delete": ["rds:DeleteDBClusterSnapshot"],
+            "Tag": ["rds:AddTagsToResource"]
+        }
+    },
+    
+    # ECR resources needed for Cortex Cloud Registry Scan
+    "AWS::ECR::Repository": {
+        "generic_actions": [
+            "ecr:CreateRepository",
+            "ecr:DeleteRepository",
+            "ecr:DescribeRepositories",
+            "ecr:TagResource",
+            "ecr:UntagResource",
+            "ecr:GetAuthorizationToken",
+            "ecr:BatchGetImage",
+            "ecr:GetDownloadUrlForLayer"
+        ],
+        "arn_pattern": "arn:aws:ecr:{region}:{accountId}:repository/{repositoryName}",
+        "property_actions": {
+            "RepositoryPolicyText": ["ecr:SetRepositoryPolicy", "ecr:GetRepositoryPolicy"],
+            "LifecyclePolicy": ["ecr:PutLifecyclePolicy", "ecr:GetLifecyclePolicy"]
+        },
+        "operation_actions": {
+            "Create": ["ecr:CreateRepository", "ecr:TagResource"],
+            "Update": ["ecr:PutLifecyclePolicy", "ecr:SetRepositoryPolicy", "ecr:TagResource", "ecr:UntagResource"],
+            "Delete": ["ecr:DeleteRepository"],
+            "Tag": ["ecr:TagResource", "ecr:UntagResource"]
+        }
+    },
+    
+    # Additional S3 operations needed for Cortex Cloud DSPM and Log Collection
+    "AWS::S3::Object": {
+        "generic_actions": [
+            "s3:PutObject",
+            "s3:GetObject",
+            "s3:DeleteObject",
+            "s3:ListBucket",
+            "s3:GetBucketLocation"
+        ],
+        "arn_pattern": "arn:aws:s3:::{bucketName}/{objectKey}",
+        "property_actions": {},
+        "operation_actions": {
+            "Create": ["s3:PutObject"],
+            "Update": ["s3:PutObject"],
+            "Delete": ["s3:DeleteObject"],
+            "Tag": []
+        }
+    }
 }

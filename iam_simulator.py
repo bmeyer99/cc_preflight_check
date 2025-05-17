@@ -16,6 +16,101 @@ from botocore.exceptions import ClientError
 from cc_preflight_exceptions import AWSError, ValidationError
 
 
+def get_relevant_resource_arns(action: str, resource_arns: List[str]) -> List[str]:
+    """
+    Filter resource ARNs to only include those relevant to the specified action.
+    
+    Args:
+        action: The IAM action (e.g., 'ec2:DescribeSnapshots', 'iam:PassRole')
+        resource_arns: List of all resource ARNs
+        
+    Returns:
+        List of resource ARNs relevant to the action's service, or ['*'] for global actions
+    """
+    # Extract service from action (e.g., 'ec2' from 'ec2:DescribeSnapshots')
+    service = action.split(':')[0] if ':' in action else ''
+    
+    # Handle special cases for actions that typically use '*' as resource
+    # This includes:
+    # 1. Actions that operate at the service level (not on specific resources)
+    # 2. Creation actions that create new resources (not operating on existing ones)
+    # 3. List/Describe actions that return multiple resources
+    global_service_actions = {
+        # Services where all actions use '*'
+        'cloudformation': True,  # All CloudFormation actions
+        'sts': True,  # All STS actions
+        
+        # Services with specific actions that use '*'
+        'apigateway': ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+        'cloudwatch': ['PutMetricData', 'GetMetricStatistics', 'ListMetrics'],
+        'dynamodb': ['ListTables', 'CreateTable'],
+        'ec2': ['DescribeInstances', 'DescribeSecurityGroups', 'DescribeVpcs', 'DescribeSubnets',
+                'DescribeRouteTables', 'DescribeNetworkInterfaces', 'CreateSecurityGroup',
+                'CreateVpc', 'CreateSubnet', 'CreateRouteTable', 'CreateNetworkInterface'],
+        'ecr': ['GetAuthorizationToken', 'DescribeRepositories', 'CreateRepository'],
+        'ecs': ['ListClusters', 'ListServices', 'CreateCluster', 'CreateService'],
+        'events': ['PutRule', 'ListRules', 'DescribeRule'],
+        'iam': ['GetUser', 'ListUsers', 'ListRoles', 'GetAccountSummary', 'CreateRole',
+                'CreatePolicy', 'CreateUser', 'ListPolicies', 'ListGroups', 'CreateGroup'],
+        'kms': ['CreateKey', 'ListKeys', 'ListAliases', 'CreateAlias', 'CreateGrant'],
+        'lambda': ['ListFunctions', 'CreateFunction', 'GetAccountSettings'],
+        'logs': ['CreateLogGroup', 'CreateLogStream', 'DescribeLogGroups', 'DescribeLogStreams'],
+        'rds': ['DescribeDBInstances', 'DescribeDBClusters', 'CreateDBInstance', 'CreateDBCluster'],
+        's3': ['ListAllMyBuckets', 'CreateBucket', 'ListBuckets'],
+        'sns': ['CreateTopic', 'ListTopics', 'ListSubscriptions', 'SetSubscriptionAttributes', 'Unsubscribe'],
+        'sqs': ['CreateQueue', 'ListQueues', 'GetQueueUrl'],
+    }
+    
+    # Common action prefixes that typically use '*' as resource
+    global_action_prefixes = {
+        'Create': True,  # Creation actions typically use '*'
+        'List': True,    # List actions typically use '*'
+        'Describe': True, # Describe actions typically use '*'
+    }
+    
+    # Check if this is a global action
+    is_global_action = False
+    
+    # Check if the entire service is global
+    if service in global_service_actions and isinstance(global_service_actions[service], bool):
+        is_global_action = global_service_actions[service]
+    # Check if the specific action is in the list for this service
+    elif service in global_service_actions and ':' in action:
+        action_name = action.split(':')[1]
+        is_global_action = action_name in global_service_actions[service]
+    # Check if the action starts with a global prefix (Create, List, Describe)
+    elif ':' in action:
+        action_name = action.split(':')[1]
+        for prefix in global_action_prefixes:
+            if action_name.startswith(prefix) and global_action_prefixes[prefix]:
+                is_global_action = True
+                break
+    
+    if is_global_action:
+        return ['*']
+    
+    # Filter resource ARNs by service
+    relevant_arns = []
+    
+    # Handle special case for iam:PassRole which applies to IAM role ARNs
+    if action == 'iam:PassRole':
+        for arn in resource_arns:
+            if arn.startswith('arn:aws:iam:') and ':role/' in arn:
+                relevant_arns.append(arn)
+        return relevant_arns if relevant_arns else ['*']
+    
+    # For regular service actions, filter ARNs by service prefix
+    arn_prefix = f'arn:aws:{service}:'
+    for arn in resource_arns:
+        if arn.startswith(arn_prefix):
+            relevant_arns.append(arn)
+    
+    # If no relevant ARNs found, use '*' as a fallback
+    # This handles cases where the template might not include resources of this service type
+    # but the action still needs to be simulated
+    return relevant_arns if relevant_arns else ['*']
+
+
 def simulate_iam_permissions(iam_client, principal_arn: str, actions: List[str],
                               resource_arns: List[str],
                               context_entries: Optional[List[Dict[str, Any]]] = None) -> Tuple[bool, List[Dict[str, Any]]]:
@@ -94,13 +189,15 @@ def simulate_iam_permissions(iam_client, principal_arn: str, actions: List[str],
                 print(f"  Progress: {i}/{len(actions)} actions processed")
             
             # Determine appropriate resources based on action type
-            action_resources = resource_arns
+            action_resources = get_relevant_resource_arns(action, resource_arns)
             
-            # CloudFormation actions should use "*" as resource
-            if action.startswith("cloudformation:"):
-                action_resources = ["*"]
-                print(f"    Using Resource: '*' for CloudFormation action: {action}")
-            # Other actions use their specific resources
+            # Log the resources being used for this action
+            if len(action_resources) == 1 and action_resources[0] == '*':
+                print(f"    Using Resource: '*' for action: {action}")
+            elif len(action_resources) <= 3:  # Only show all ARNs if there are 3 or fewer
+                print(f"    Using {len(action_resources)} Resources for action {action}: {action_resources}")
+            else:
+                print(f"    Using {len(action_resources)} Resources for action {action} (showing first 2): {action_resources[:2]} ...")
             
             # Prepare simulation input
             simulation_input = {

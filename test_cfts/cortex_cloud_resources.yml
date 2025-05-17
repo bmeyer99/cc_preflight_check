@@ -1,0 +1,110 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Test CloudFormation template for Cortex Cloud resources'
+
+Parameters:
+  SourceVolumeId:
+    Type: String
+    Description: The ID of the EBS volume to snapshot
+    Default: vol-12345678
+
+  DBInstanceIdentifier:
+    Type: String
+    Description: The identifier of the DB instance to snapshot
+    Default: mydbinstance
+
+  DBClusterIdentifier:
+    Type: String
+    Description: The identifier of the DB cluster to snapshot
+    Default: mydbcluster
+
+Resources:
+  # EC2 Snapshot for Cortex ADS
+  EC2Snapshot:
+    Type: AWS::EC2::Snapshot
+    Properties:
+      VolumeId: !Ref SourceVolumeId
+      Description: Snapshot for Cortex ADS scanning
+      Tags:
+        - Key: managed_by
+          Value: paloaltonetworks
+        - Key: Name
+          Value: CortexADSSnapshot
+
+  # RDS DB Snapshot for Cortex DSPM
+  RDSDBSnapshot:
+    Type: AWS::RDS::DBSnapshot
+    Properties:
+      DBInstanceIdentifier: !Ref DBInstanceIdentifier
+      DBSnapshotIdentifier: cortex-dspm-snapshot
+      Tags:
+        - Key: managed_by
+          Value: paloaltonetworks
+
+  # RDS DB Cluster Snapshot for Cortex DSPM
+  RDSDBClusterSnapshot:
+    Type: AWS::RDS::DBClusterSnapshot
+    Properties:
+      DBClusterIdentifier: !Ref DBClusterIdentifier
+      DBClusterSnapshotIdentifier: cortex-dspm-cluster-snapshot
+      Tags:
+        - Key: managed_by
+          Value: paloaltonetworks
+
+  # ECR Repository for Cortex Registry Scan
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: cortex-registry-scan
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep only 10 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: managed_by
+          Value: paloaltonetworks
+
+  # S3 Bucket for Cortex Log Collection
+  LogBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'cortex-logs-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: managed_by
+          Value: paloaltonetworks
+
+Outputs:
+  SnapshotId:
+    Description: The ID of the created EC2 snapshot
+    Value: !Ref EC2Snapshot
+
+  DBSnapshotId:
+    Description: The ID of the created RDS DB snapshot
+    Value: !Ref RDSDBSnapshot
+
+  DBClusterSnapshotId:
+    Description: The ID of the created RDS DB cluster snapshot
+    Value: !Ref RDSDBClusterSnapshot
+
+  ECRRepositoryName:
+    Description: The name of the created ECR repository
+    Value: !Ref ECRRepository
+
+  LogBucketName:
+    Description: The name of the created S3 bucket for logs
+    Value: !Ref LogBucket
