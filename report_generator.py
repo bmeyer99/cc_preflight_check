@@ -15,14 +15,17 @@ import datetime
 from typing import Dict, List, Any, Optional, Tuple
 import tempfile
 
+# Flag to track if WeasyPrint is available
+WEASYPRINT_AVAILABLE = True
 try:
     from weasyprint import HTML, CSS
     from weasyprint.text.fonts import FontConfiguration
 except ImportError:
+    WEASYPRINT_AVAILABLE = False
     print("WeasyPrint is required for PDF report generation.")
     print("Install it with: pip install weasyprint")
     print("For more information, visit: https://doc.courtbouillon.org/weasyprint/stable/first_steps.html")
-    raise
+    print("Falling back to HTML report generation.")
 
 
 def generate_iam_policy_json(
@@ -33,9 +36,9 @@ def generate_iam_policy_json(
     Generate a JSON file containing the consolidated IAM policy for all identified missing permissions.
     
     The policy is structured according to AWS best practices:
-    1. CloudFormation actions use CloudFormation stack ARNs as resources
-    2. IAM PassRole actions use IAM Role ARNs as resources
-    3. Other service actions use their appropriate resource ARNs
+    1. CloudFormation actions use "*" or CloudFormation stack ARNs as resources (in a dedicated statement)
+    2. IAM PassRole actions use IAM Role ARNs as resources (in a dedicated statement)
+    3. Other service actions use their appropriate resource ARNs (in separate statements by service)
     
     Note: This policy only includes permissions needed by the deploying principal to manage
     the CloudFormation stack and access prerequisite resources, not permissions for resources
@@ -48,8 +51,10 @@ def generate_iam_policy_json(
     Returns:
         Path to the generated JSON file
     """
-    # Group actions by service type and resource
-    service_resource_to_actions = {}
+    # Initialize collections for different types of actions
+    cloudformation_actions = set()
+    passrole_resources = set()
+    other_service_actions = {}  # Format: {(service, resource): [actions]}
     
     for result in failed_simulations:
         action = result.get('EvalActionName', '')
@@ -58,18 +63,20 @@ def generate_iam_policy_json(
         # Extract service from action (e.g., 'cloudformation' from 'cloudformation:CreateStack')
         service = action.split(':')[0] if ':' in action else 'unknown'
         
-        # Special handling for CloudFormation actions
+        # Handle different action types according to requirements
         if service == 'cloudformation':
-            # If resource is not a CloudFormation stack ARN, use a generic CloudFormation stack ARN
-            if not resource.startswith('arn:aws:cloudformation:'):
-                resource = '*'  # Use '*' as a fallback for CloudFormation actions
-        
-        # Create a key that combines service and resource type
-        key = (service, resource)
-        
-        if key not in service_resource_to_actions:
-            service_resource_to_actions[key] = []
-        service_resource_to_actions[key].append(action)
+            # CloudFormation actions go in their own statement with "*" as resource
+            cloudformation_actions.add(action)
+        elif action == 'iam:PassRole':
+            # PassRole actions go in their own statement with IAM role ARNs as resources
+            if resource.startswith('arn:aws:iam:') and ':role/' in resource:
+                passrole_resources.add(resource)
+        else:
+            # Other service actions are grouped by service and resource
+            key = (service, resource)
+            if key not in other_service_actions:
+                other_service_actions[key] = []
+            other_service_actions[key].append(action)
     
     # Generate policy document with properly structured statements
     policy_doc = {
@@ -77,29 +84,29 @@ def generate_iam_policy_json(
         "Statement": []
     }
     
-    # Group similar services and resources together
-    service_groups = {}
+    # 1. Add CloudFormation actions statement (if any)
+    if cloudformation_actions:
+        policy_doc["Statement"].append({
+            "Effect": "Allow",
+            "Action": sorted(cloudformation_actions),
+            "Resource": "*"  # CloudFormation actions use "*" as resource
+        })
     
-    for (service, resource), actions_list in service_resource_to_actions.items():
-        if service not in service_groups:
-            service_groups[service] = {}
-        
-        if resource not in service_groups[service]:
-            service_groups[service][resource] = []
-        
-        service_groups[service][resource].extend(actions_list)
+    # 2. Add IAM PassRole statement (if any)
+    if passrole_resources:
+        policy_doc["Statement"].append({
+            "Effect": "Allow",
+            "Action": "iam:PassRole",
+            "Resource": sorted(list(passrole_resources))  # List of IAM role ARNs
+        })
     
-    # Create statements for each service group
-    for service, resources in service_groups.items():
-        for resource, actions in resources.items():
-            # Sort actions for consistent output
-            sorted_actions = sorted(set(actions))
-            
-            policy_doc["Statement"].append({
-                "Effect": "Allow",
-                "Action": sorted_actions,
-                "Resource": resource
-            })
+    # 3. Add statements for other services
+    for (service, resource), actions in other_service_actions.items():
+        policy_doc["Statement"].append({
+            "Effect": "Allow",
+            "Action": sorted(set(actions)),
+            "Resource": resource
+        })
     
     # Create directory if it doesn't exist
     output_dir = os.path.dirname(output_file)
@@ -152,8 +159,9 @@ def generate_pdf_report(
         
     Returns:
         Tuple containing:
-            - Path to the generated PDF file
-            - Path to the generated IAM policy JSON file (or None if permissions_ok is True)
+            - Path to the generated report file (PDF if WeasyPrint is available and successful, HTML otherwise).
+              This can be None if report generation fails.
+            - Path to the generated IAM policy JSON file (or None if not applicable or generation fails).
     """
     # Create reports directory if it doesn't exist
     reports_dir = "reports"
@@ -194,35 +202,62 @@ def generate_pdf_report(
         css_path = css_file.name
     
     json_output_file = None
+    report_output_path = None  # Path for the successfully generated report (PDF or HTML)
     
-    try:
-        # Configure fonts
-        font_config = FontConfiguration()
-        
-        # Generate PDF
-        html = HTML(filename=html_path)
-        css = CSS(filename=css_path, font_config=font_config)
-        
-        # Render and write PDF
-        html.write_pdf(pdf_output_file, stylesheets=[css], font_config=font_config)
-        
-        print(f"PDF report generated: {pdf_output_file}")
-        
-        # Generate IAM policy JSON file if permissions check failed
-        if not permissions_ok and failed_simulations:
-            # Create JSON filename with same base name as PDF
-            json_output_file = os.path.splitext(pdf_output_file)[0] + '.json'
-            generate_iam_policy_json(failed_simulations, json_output_file)
-        
-        return pdf_output_file, json_output_file
-    
-    finally:
-        # Clean up temporary files
+    # If WeasyPrint is available, try to generate PDF
+    if WEASYPRINT_AVAILABLE:
         try:
-            os.unlink(html_path)
-            os.unlink(css_path)
+            # Configure fonts
+            font_config = FontConfiguration()
+            
+            # Generate PDF
+            html_doc = HTML(filename=html_path)
+            css_doc = CSS(filename=css_path, font_config=font_config)
+            
+            # Render and write PDF
+            html_doc.write_pdf(pdf_output_file, stylesheets=[css_doc], font_config=font_config)
+            report_output_path = pdf_output_file
+            print(f"PDF report generated: {report_output_path}")
+            
         except Exception as e:
-            print(f"Warning: Could not remove temporary files: {e}")
+            print(f"Error generating PDF with WeasyPrint: {e}")
+            print("Falling back to HTML output.")
+            html_fallback_file = os.path.splitext(pdf_output_file)[0] + '.html'
+            try:
+                with open(html_fallback_file, 'w', encoding='utf-8') as f_html_out:
+                    f_html_out.write(html_content)
+                report_output_path = html_fallback_file
+                print(f"HTML report generated instead: {report_output_path}")
+            except IOError as ioe:
+                print(f"Error writing HTML fallback file: {ioe}")
+                # report_output_path remains None
+    else:  # WeasyPrint is not available
+        # Generate HTML file with same base name as intended PDF
+        html_output_filename = os.path.splitext(pdf_output_file)[0] + '.html'
+        try:
+            with open(html_output_filename, 'w', encoding='utf-8') as f_html_out:
+                f_html_out.write(html_content)
+            report_output_path = html_output_filename
+            print(f"WeasyPrint not found. HTML report generated: {report_output_path}")
+        except IOError as e:
+            print(f"Error writing HTML report file: {e}")
+            # report_output_path remains None
+    
+    # Generate IAM policy JSON file if permissions check failed
+    if not permissions_ok and failed_simulations:
+        # Use the original intended PDF base name for consistency
+        json_filename_base = os.path.splitext(pdf_output_file)[0]
+        json_output_file = f"{json_filename_base}.json"
+        generate_iam_policy_json(failed_simulations, json_output_file)
+    
+    # Clean up temporary files
+    try:
+        os.unlink(html_path)
+        os.unlink(css_path)
+    except Exception as e:
+        print(f"Warning: Could not remove temporary files: {e}")
+    
+    return report_output_path, json_output_file
 
 
 def _generate_html_content(
@@ -267,8 +302,10 @@ def _generate_html_content(
     # Count failed actions
     failed_actions = len(failed_simulations)
     
-    # Group actions by service type and resource
-    service_resource_to_actions = {}
+    # Initialize collections for different types of actions
+    cloudformation_actions = set()
+    passrole_resources = set()
+    other_service_actions = {}  # Format: {(service, resource): [actions]}
     
     for result in failed_simulations:
         action = result.get('EvalActionName', '')
@@ -277,18 +314,20 @@ def _generate_html_content(
         # Extract service from action (e.g., 'cloudformation' from 'cloudformation:CreateStack')
         service = action.split(':')[0] if ':' in action else 'unknown'
         
-        # Special handling for CloudFormation actions
+        # Handle different action types according to requirements
         if service == 'cloudformation':
-            # If resource is not a CloudFormation stack ARN, use a generic CloudFormation stack ARN
-            if not resource.startswith('arn:aws:cloudformation:'):
-                resource = '*'  # Use '*' as a fallback for CloudFormation actions
-        
-        # Create a key that combines service and resource type
-        key = (service, resource)
-        
-        if key not in service_resource_to_actions:
-            service_resource_to_actions[key] = []
-        service_resource_to_actions[key].append(action)
+            # CloudFormation actions go in their own statement with "*" as resource
+            cloudformation_actions.add(action)
+        elif action == 'iam:PassRole':
+            # PassRole actions go in their own statement with IAM role ARNs as resources
+            if resource.startswith('arn:aws:iam:') and ':role/' in resource:
+                passrole_resources.add(resource)
+        else:
+            # Other service actions are grouped by service and resource
+            key = (service, resource)
+            if key not in other_service_actions:
+                other_service_actions[key] = []
+            other_service_actions[key].append(action)
     
     # Generate policy document with properly structured statements
     policy_doc = {
@@ -296,34 +335,34 @@ def _generate_html_content(
         "Statement": []
     }
     
-    # Group similar services and resources together
-    service_groups = {}
+    # 1. Add CloudFormation actions statement (if any)
+    if cloudformation_actions:
+        policy_doc["Statement"].append({
+            "Effect": "Allow",
+            "Action": sorted(cloudformation_actions),
+            "Resource": "*"  # CloudFormation actions use "*" as resource
+        })
     
-    for (service, resource), actions_list in service_resource_to_actions.items():
-        if service not in service_groups:
-            service_groups[service] = {}
-        
-        if resource not in service_groups[service]:
-            service_groups[service][resource] = []
-        
-        service_groups[service][resource].extend(actions_list)
+    # 2. Add IAM PassRole statement (if any)
+    if passrole_resources:
+        policy_doc["Statement"].append({
+            "Effect": "Allow",
+            "Action": "iam:PassRole",
+            "Resource": sorted(list(passrole_resources))  # List of IAM role ARNs
+        })
     
-    # Create statements for each service group
-    for service, resources in service_groups.items():
-        for resource, actions in resources.items():
-            # Sort actions for consistent output
-            sorted_actions = sorted(set(actions))
-            
-            policy_doc["Statement"].append({
-                "Effect": "Allow",
-                "Action": sorted_actions,
-                "Resource": resource
-            })
+    # 3. Add statements for other services
+    for (service, resource), actions in other_service_actions.items():
+        policy_doc["Statement"].append({
+            "Effect": "Allow",
+            "Action": sorted(set(actions)),
+            "Resource": resource
+        })
     
     # Format policy as JSON string with indentation
     policy_json = json.dumps(policy_doc, indent=2)
     
-    # Create HTML content
+    # Create HTML content with proper formatting for all placeholders
     html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -371,12 +410,12 @@ def _generate_html_content(
             
             <div class="summary-stats">
                 <div class="stat-item">
-                    <div class="stat-label">Prerequisite Checks</div>
-                    <div class="stat-value status-{('green' if prereqs_ok else 'red')}">{('PASS' if prereqs_ok else 'FAIL')}</div>
+                    <div class="stat-label">Deploying Principal IAM Simulation</div>
+                    <div class="stat-value status-{("green" if permissions_ok else "red")}" style="color: {("green" if permissions_ok else "red")}; background-color: {("#f0fff0" if permissions_ok else "#fff0f0")};">{("PASS" if permissions_ok else "FAIL")}</div>
                 </div>
                 <div class="stat-item">
-                    <div class="stat-label">Permission Checks</div>
-                    <div class="stat-value status-{('green' if permissions_ok else 'red')}">{('PASS' if permissions_ok else 'FAIL')}</div>
+                    <div class="stat-label">Prerequisite Resource Checks</div>
+                    <div class="stat-value status-{("green" if prereqs_ok else "red")}" style="color: {("green" if prereqs_ok else "red")}; background-color: {("#f0fff0" if prereqs_ok else "#fff0f0")};">{("PASS" if prereqs_ok else "FAIL")}</div>
                 </div>
                 <div class="stat-item">
                     <div class="stat-label">Failed Actions</div>
@@ -385,11 +424,14 @@ def _generate_html_content(
             </div>
             
             <div class="summary-conclusion">
-                <p><strong>Conclusion:</strong> {
-                    "All checks passed. The principal has sufficient permissions to deploy the CloudFormation template." 
-                    if overall_status == "PASS" else 
-                    "Some checks failed. The principal lacks necessary permissions to deploy the CloudFormation template. See detailed findings for more information."
-                }</p>
+                <p><strong>Conclusion:</strong> """ + (
+                    "All checks passed. The principal has sufficient permissions to deploy the CloudFormation template."
+                    if overall_status == "PASS" else
+                    "Some checks failed. " +
+                    ("The deploying principal lacks necessary IAM permissions. " if not permissions_ok else "") +
+                    ("Prerequisite resources are missing. " if not prereqs_ok else "") +
+                    "See detailed findings for more information."
+                ) + """</p>
             </div>
         </div>
         
@@ -400,8 +442,8 @@ def _generate_html_content(
         <h3 id="prerequisite-checks">2.1 Prerequisite Checks</h3>
         <div class="findings-section">
             <p>Prerequisite checks verify that required resources exist before template deployment.</p>
-            <div class="status-indicator status-{('green' if prereqs_ok else 'red')}">
-                Status: {('PASS' if prereqs_ok else 'FAIL')}
+            <div class="status-indicator status-{("green" if prereqs_ok else "red")}" style="color: {("green" if prereqs_ok else "red")}; background-color: {("#f0fff0" if prereqs_ok else "#fff0f0")};">
+                Status: {("PASS" if prereqs_ok else "FAIL")}
             </div>
             
             <table class="findings-table">
@@ -447,11 +489,11 @@ def _generate_html_content(
         </div>
         
         <!-- Permission Checks -->
-        <h3 id="permission-checks">2.2 Permission Checks</h3>
+        <h3 id="permission-checks">2.2 Deploying Principal IAM Simulation</h3>
         <div class="findings-section">
-            <p>Permission checks verify that the principal has the necessary IAM permissions to deploy the template.</p>
-            <div class="status-indicator status-{0}">
-                Status: {1}
+            <p>IAM simulation verifies that the deploying principal has the necessary permissions to deploy the CloudFormation template and access prerequisite resources. This does not include permissions for resources created by the template.</p>
+            <div class="status-indicator status-{("green" if permissions_ok else "red")}" style="color: {("green" if permissions_ok else "red")}; background-color: {("#f0fff0" if permissions_ok else "#fff0f0")};">
+                Status: {("PASS" if permissions_ok else "FAIL")}
             </div>
             
             <table class="findings-table">
@@ -464,7 +506,7 @@ def _generate_html_content(
                     </tr>
                 </thead>
                 <tbody>
-""".format('green' if permissions_ok else 'red', 'PASS' if permissions_ok else 'FAIL')
+"""
     
     # Add failed permission check results
     if failed_simulations:

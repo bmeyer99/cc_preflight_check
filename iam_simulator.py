@@ -92,12 +92,21 @@ def simulate_iam_permissions(iam_client, principal_arn: str, actions: List[str],
             # Show progress every 10 actions
             if i % 10 == 0:
                 print(f"  Progress: {i}/{len(actions)} actions processed")
-                
+            
+            # Determine appropriate resources based on action type
+            action_resources = resource_arns
+            
+            # CloudFormation actions should use "*" as resource
+            if action.startswith("cloudformation:"):
+                action_resources = ["*"]
+                print(f"    Using Resource: '*' for CloudFormation action: {action}")
+            # Other actions use their specific resources
+            
             # Prepare simulation input
             simulation_input = {
                 'PolicySourceArn': principal_arn,
                 'ActionNames': [action],
-                'ResourceArns': resource_arns
+                'ResourceArns': action_resources
             }
             
             if context_entries:

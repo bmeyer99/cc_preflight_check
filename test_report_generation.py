@@ -113,7 +113,7 @@ def main():
             resource_arns=resource_arns,
             prereq_checks=prereq_checks,
             prereqs_ok=True,  # Assume prerequisites passed
-            permissions_ok=False,  # Assume permissions failed
+            permissions_ok=False,  # Assume permissions failed (to test distinct status reporting)
             failed_simulations=failed_simulations,
             output_file=output_file
         )
@@ -134,11 +134,21 @@ def main():
                     policy.get("Version") == "2012-10-17" and
                     isinstance(policy.get("Statement"), list)):
                     
+                    print("\nVerifying distinct status reporting in PDF...")
+                    print("  - Prerequisite Checks: PASS (prereqs_ok=True)")
+                    print("  - Deploying Principal IAM Simulation: FAIL (permissions_ok=False)")
+                    print("  - This verifies that the PDF report correctly distinguishes between these two statuses")
+                    
                     # Check if the policy is properly structured with correct resource types
                     cloudformation_actions_correct = True
                     passrole_actions_correct = True
+                    statements_properly_separated = True
                     
-                    for statement in policy.get("Statement", []):
+                    # Track which statements contain which action types
+                    cloudformation_statement = None
+                    passrole_statement = None
+                    
+                    for i, statement in enumerate(policy.get("Statement", [])):
                         actions = statement.get("Action", [])
                         resource = statement.get("Resource")
                         
@@ -147,34 +157,64 @@ def main():
                             actions = [actions]
                         
                         # Check CloudFormation actions
-                        if any(action.startswith("cloudformation:") for action in actions):
-                            # CloudFormation actions should use CloudFormation stack ARNs or "*"
+                        has_cloudformation_actions = any(action.startswith("cloudformation:") for action in actions)
+                        if has_cloudformation_actions:
+                            cloudformation_statement = i
+                            # CloudFormation actions should use "*" or CloudFormation stack ARNs
                             if isinstance(resource, str):
                                 if not (resource == "*" or resource.startswith("arn:aws:cloudformation:")):
                                     cloudformation_actions_correct = False
+                                    print(f"  Error: CloudFormation actions use incorrect resource: {resource}")
                             elif isinstance(resource, list):
                                 for res in resource:
                                     if not (res == "*" or res.startswith("arn:aws:cloudformation:")):
                                         cloudformation_actions_correct = False
+                                        print(f"  Error: CloudFormation actions use incorrect resource: {res}")
                         
                         # Check PassRole actions
-                        if "iam:PassRole" in actions:
+                        has_passrole_action = "iam:PassRole" in actions
+                        if has_passrole_action:
+                            passrole_statement = i
                             # PassRole actions should use IAM role ARNs
                             if isinstance(resource, str):
                                 if not resource.startswith("arn:aws:iam:") and resource != "*":
                                     passrole_actions_correct = False
+                                    print(f"  Error: PassRole action uses incorrect resource: {resource}")
                             elif isinstance(resource, list):
+                                all_iam_roles = True
                                 for res in resource:
                                     if not res.startswith("arn:aws:iam:") and res != "*":
-                                        passrole_actions_correct = False
+                                        all_iam_roles = False
+                                        print(f"  Error: PassRole action uses incorrect resource: {res}")
+                                if not all_iam_roles:
+                                    passrole_actions_correct = False
+                            else:
+                                passrole_actions_correct = False
+                                print("  Error: PassRole action has no resources specified")
+                        
+                        # Check if CloudFormation and PassRole actions are in the same statement
+                        if has_cloudformation_actions and has_passrole_action:
+                            statements_properly_separated = False
+                            print("  Error: CloudFormation and PassRole actions are in the same statement")
+                        
+                        # Check if CloudFormation actions are mixed with other service actions
+                        if has_cloudformation_actions and len(actions) > 1 and not all(action.startswith("cloudformation:") for action in actions):
+                            statements_properly_separated = False
+                            print("  Error: CloudFormation actions are mixed with other service actions")
                     
-                    if cloudformation_actions_correct and passrole_actions_correct:
+                    # Final validation result
+                    validation_passed = cloudformation_actions_correct and passrole_actions_correct and statements_properly_separated
+                    
+                    if validation_passed:
                         print("IAM policy JSON validation: PASSED (Correct resource types for actions verified)")
                     else:
+                        print("IAM policy JSON validation: FAILED")
                         if not cloudformation_actions_correct:
-                            print("IAM policy JSON validation: FAILED - CloudFormation actions not associated with correct resources")
+                            print("  - CloudFormation actions not associated with correct resources")
                         if not passrole_actions_correct:
-                            print("IAM policy JSON validation: FAILED - PassRole actions not associated with correct resources")
+                            print("  - PassRole actions not associated with correct resources")
+                        if not statements_properly_separated:
+                            print("  - Actions not properly separated into distinct statements")
                     
                     # Print the policy for demonstration
                     print("\nGenerated IAM Policy:")

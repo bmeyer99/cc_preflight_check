@@ -325,16 +325,18 @@ def main() -> None:
 
         # Final Summary
         print("\n--- Pre-flight Check Summary ---")
-        if prereqs_ok:
-            print("[PASS] Prerequisite checks passed or no prerequisites to check.")
-        else:
-            print("[FAIL] Some prerequisite checks failed.")
-
+        
+        # Clearly distinguish between deploying principal IAM permissions and prerequisite checks
         if permissions_ok:
-            print("[PASS] IAM permission simulation indicates all permissions are present.")
+            print("[PASS] Deploying Principal IAM Simulation: All required permissions are present.")
         else:
-            print("[FAIL] IAM permission simulation indicates missing permissions.")
+            print("[FAIL] Deploying Principal IAM Simulation: Missing required permissions.")
             print("        Review the simulation details above for denied actions.")
+            
+        if prereqs_ok:
+            print("[PASS] Prerequisite Resource Checks: All prerequisites exist or no prerequisites required.")
+        else:
+            print("[FAIL] Prerequisite Resource Checks: Some prerequisite resources are missing.")
 
         # Generate PDF report and IAM policy JSON by default unless --no-pdf is specified
         if not args.no_pdf:
@@ -375,11 +377,21 @@ def main() -> None:
             except Exception as e:
                 print(f"\nError generating PDF report: {e}", file=sys.stderr)
         
+        # Overall status - exit with non-zero code if ANY check fails
         if prereqs_ok and permissions_ok:
             print("\nPre-flight checks completed successfully.")
             sys.exit(0)
         else:
             print("\nPre-flight checks identified issues. Review failures before deploying.")
+            
+            # Provide more specific guidance based on which check failed
+            if not permissions_ok and not prereqs_ok:
+                print("Both IAM permissions and prerequisite resources need to be addressed.")
+            elif not permissions_ok:
+                print("The deploying principal is missing required IAM permissions.")
+                print("See the generated IAM policy in the PDF report for the missing permissions.")
+            elif not prereqs_ok:
+                print("Prerequisite resources are missing and must be created before deployment.")
             
             # Note: IAM policy for missing permissions is now automatically included in the PDF report
             # when using the --generate-pdf flag
