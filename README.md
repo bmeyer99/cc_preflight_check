@@ -297,7 +297,24 @@ When permission simulation fails:
   - OU discovery requires `organizations:ListRoots` and `organizations:ListOrganizationalUnitsForParent` permissions.
   - If these permissions are not available, the tool will fall back to manual input for the `OrganizationalUnitId` parameter.
 
-## 5. Extending the Tool
+## 5. Code Structure and Extending the Tool
+
+### Modular Architecture
+
+The tool has been modularized into several Python modules for better maintainability:
+
+- **`cc_preflight.py`**: Main entry point that imports from other modules
+- **`cc_preflight_exceptions.py`**: Custom exception classes
+- **`cfn_yaml_handler.py`**: YAML parsing and CloudFormation tag handling
+- **`aws_utils.py`**: AWS-related utility functions
+- **`condition_evaluator.py`**: CloudFormation condition evaluation
+- **`resource_processor.py`**: Resource name resolution and ARN construction
+- **`template_analyzer.py`**: Template parsing and action collection
+- **`iam_prerequisites.py`**: Prerequisite resource checking
+- **`iam_simulator.py`**: IAM permission simulation
+- **`cli_handler.py`**: Command-line interface handling
+- **`resource_map.py`**: Resource-to-action mapping definitions
+- **`value_resolver.py`**: CloudFormation intrinsic function resolution
 
 ### Adding Support for New Resource Types
 
@@ -334,7 +351,7 @@ To enhance intrinsic function resolution, modify the functions in `value_resolve
 
 ### Adding New Prerequisite Checks
 
-To add new types of prerequisite checks, update the `check_prerequisites` function in `cc_preflight.py`:
+To add new types of prerequisite checks, update the `check_prerequisites` function in `iam_prerequisites.py`:
 
 ```python
 if check["type"] == "s3_bucket_exists":
@@ -347,7 +364,7 @@ if check["type"] == "s3_bucket_exists":
         all_prereqs_ok = False
 ```
 
-Then update the `parse_template_and_collect_actions` function to identify and add these new prerequisite checks.
+Then update the `parse_template_and_collect_actions` function in `template_analyzer.py` to identify and add these new prerequisite checks.
 
 ## 6. Conclusion
 
