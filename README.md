@@ -140,6 +140,8 @@ python cc_preflight.py \
 - **`--profile`**: AWS CLI profile to use for API calls.
 - **`--condition-values`**: JSON string of condition name to boolean value mappings (e.g., `{"IsProduction": true, "EnableFeatureX": false}`).
 - **`--non-interactive`**: Run in non-interactive mode (no prompts). In this mode, all required parameters must be provided via command-line arguments.
+- **`--generate-pdf`**: Generate a PDF report of the pre-flight check results.
+- **`--pdf-output`**: Path to save the PDF report. If not provided, a default name will be used.
 
 ### Example Commands
 
@@ -191,6 +193,17 @@ python cc_preflight.py \
     --non-interactive
 ```
 
+#### With PDF Report Generation
+
+```bash
+python cc_preflight.py \
+    --template-file ./my-cloudformation-template.yml \
+    --deploying-principal-arn arn:aws:iam::123456789012:role/DeploymentRole \
+    --region us-east-1 \
+    --generate-pdf \
+    --pdf-output ./my-preflight-report.pdf
+```
+
 ### Understanding the Output
 
 The tool provides detailed output at each stage of the analysis:
@@ -236,6 +249,35 @@ Pre-flight checks identified issues. Review failures before deploying.
 ```
 
 ## 4. New Features
+
+### PDF Report Generation
+
+The tool now supports generating comprehensive PDF reports of pre-flight check results:
+
+- **Professional Reports**: Creates well-formatted PDF reports with a clear structure
+- **Executive Summary**: Provides a high-level overview of the check results
+- **Detailed Findings**: Lists all prerequisite and permission check results
+- **Remediation Guidance**: Includes IAM policy snippets for missing permissions
+- **Shareable Format**: PDF format is ideal for sharing with team members and stakeholders
+
+To generate a PDF report, use the `--generate-pdf` flag:
+
+```bash
+python cc_preflight.py --template-file ./template.yml --generate-pdf
+```
+
+You can specify a custom output path with `--pdf-output`:
+
+```bash
+python cc_preflight.py --template-file ./template.yml --generate-pdf --pdf-output ./reports/my-report.pdf
+```
+
+**Note**: PDF report generation requires the WeasyPrint library, which can be installed with:
+```bash
+pip install weasyprint
+```
+
+For more information on WeasyPrint installation requirements, visit: https://doc.courtbouillon.org/weasyprint/stable/first_steps.html
 
 ### AWS Configuration Auto-Detection
 
@@ -313,6 +355,7 @@ The tool has been modularized into several Python modules for better maintainabi
 - **`iam_prerequisites.py`**: Prerequisite resource checking
 - **`iam_simulator.py`**: IAM permission simulation
 - **`cli_handler.py`**: Command-line interface handling
+- **`report_generator.py`**: PDF report generation
 - **`resource_map.py`**: Resource-to-action mapping definitions
 - **`value_resolver.py`**: CloudFormation intrinsic function resolution
 

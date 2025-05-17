@@ -8,6 +8,7 @@ Check Tool. It includes the main entry point for the tool.
 """
 
 import sys
+import os
 import argparse
 import json
 import getpass
@@ -80,6 +81,8 @@ def main() -> None:
     parser.add_argument("--profile", help="AWS CLI profile to use.")
     parser.add_argument("--condition-values", help="JSON string of condition name to boolean value mappings.")
     parser.add_argument("--non-interactive", action="store_true", help="Run in non-interactive mode (no prompts).")
+    parser.add_argument("--no-pdf", action="store_true", help="Skip generating a PDF report of the pre-flight check results.")
+    parser.add_argument("--pdf-output", help="Path to save the PDF report. If not provided, a default name will be used in the reports/ directory.")
 
     args = parser.parse_args()
 
@@ -333,42 +336,51 @@ def main() -> None:
             print("[FAIL] IAM permission simulation indicates missing permissions.")
             print("        Review the simulation details above for denied actions.")
 
+        # Generate PDF report by default unless --no-pdf is specified
+        if not args.no_pdf:
+            try:
+                from report_generator import generate_pdf_report, update_task_status
+                
+                # Update task status if task file is provided
+                task_file = os.environ.get("TASK_FILE")
+                if task_file and os.path.exists(task_file):
+                    update_task_status(task_file, "In Progress")
+                
+                # Generate PDF report
+                pdf_file = generate_pdf_report(
+                    template_file=args.template_file,
+                    principal_arn=args.deploying_principal_arn,
+                    region=args.region,
+                    actions=actions,
+                    resource_arns=resource_arns,
+                    prereq_checks=prerequisite_checks,
+                    prereqs_ok=prereqs_ok,
+                    permissions_ok=permissions_ok,
+                    failed_simulations=failed_sims,
+                    output_file=args.pdf_output
+                )
+                
+                print(f"\nPDF report generated: {pdf_file}")
+                
+                # Update task status if task file is provided
+                if task_file and os.path.exists(task_file):
+                    update_task_status(task_file, "Completed")
+                
+            except ImportError:
+                print("\nError: Could not generate PDF report. WeasyPrint is required for PDF generation.")
+                print("Install it with: pip install weasyprint")
+                print("For more information, visit: https://doc.courtbouillon.org/weasyprint/stable/first_steps.html")
+            except Exception as e:
+                print(f"\nError generating PDF report: {e}", file=sys.stderr)
+        
         if prereqs_ok and permissions_ok:
             print("\nPre-flight checks completed successfully.")
             sys.exit(0)
         else:
             print("\nPre-flight checks identified issues. Review failures before deploying.")
             
-            # If in interactive mode, offer to generate a policy document for missing permissions
-            if not args.non_interactive and not permissions_ok and failed_sims:
-                create_policy = prompt_user("Would you like to generate an IAM policy document for the missing permissions? (yes/no)", "yes")
-                if create_policy.lower() in ["yes", "y"]:
-                    policy_doc = {
-                        "Version": "2012-10-17",
-                        "Statement": []
-                    }
-                    
-                    # Group actions by resource
-                    resource_to_actions = {}
-                    for result in failed_sims:
-                        action = result['EvalActionName']
-                        resource = result.get('EvalResourceName', '*')
-                        
-                        if resource not in resource_to_actions:
-                            resource_to_actions[resource] = []
-                        resource_to_actions[resource].append(action)
-                    
-                    # Create policy statements
-                    for resource, actions in resource_to_actions.items():
-                        policy_doc["Statement"].append({
-                            "Effect": "Allow",
-                            "Action": sorted(actions),
-                            "Resource": resource
-                        })
-                    
-                    print("\nSuggested IAM Policy Document:")
-                    print(json.dumps(policy_doc, indent=2))
-                    print("\nYou can attach this policy to the deploying principal to grant the missing permissions.")
+            # Note: IAM policy for missing permissions is now automatically included in the PDF report
+            # when using the --generate-pdf flag
             
             sys.exit(1)
             
