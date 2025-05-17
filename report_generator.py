@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-PDF Report Generator.
+Report Generator.
 
-This module provides functionality for generating PDF reports from CloudFormation
+This module provides functionality for generating reports from CloudFormation
 pre-flight check results. It uses WeasyPrint to convert HTML/CSS to PDF, creating
 professional reports with executive summaries, detailed findings, and IAM policy
-suggestions for any identified shortcomings.
+suggestions for any identified shortcomings. It also generates a JSON file containing
+the consolidated IAM policy for all identified missing permissions.
 """
 
 import os
@@ -24,6 +25,78 @@ except ImportError:
     raise
 
 
+def generate_iam_policy_json(
+    failed_simulations: List[Dict[str, Any]],
+    output_file: str
+) -> str:
+    """
+    Generate a JSON file containing the consolidated IAM policy for all identified missing permissions.
+    
+    The policy is condensed by grouping statements with identical "Effect" and "Action" lists
+    into a single statement with multiple resources.
+    
+    Args:
+        failed_simulations: List of failed simulation results
+        output_file: Path to save the JSON file
+        
+    Returns:
+        Path to the generated JSON file
+    """
+    # First, group actions by resource
+    resource_to_actions = {}
+    for result in failed_simulations:
+        action = result.get('EvalActionName', '')
+        resource = result.get('EvalResourceName', '*')
+        
+        if resource not in resource_to_actions:
+            resource_to_actions[resource] = []
+        resource_to_actions[resource].append(action)
+    
+    # Now, reverse the mapping to group resources by effect and actions
+    # Using (effect, tuple(sorted_actions)) as key for the dictionary
+    effect_actions_to_resources = {}
+    for resource, actions_list in resource_to_actions.items():
+        # Sort actions to ensure consistent grouping
+        sorted_actions = tuple(sorted(actions_list))
+        # Default effect is "Allow" for all statements in this context
+        effect = "Allow"
+        
+        key = (effect, sorted_actions)
+        if key not in effect_actions_to_resources:
+            effect_actions_to_resources[key] = []
+        effect_actions_to_resources[key].append(resource)
+    
+    # Generate condensed policy document
+    policy_doc = {
+        "Version": "2012-10-17",
+        "Statement": []
+    }
+    
+    # Create statements with grouped resources
+    for (effect, actions_tuple), resources in effect_actions_to_resources.items():
+        # If there's only one resource, use a string
+        # If there are multiple resources, use an array
+        resource_value = resources[0] if len(resources) == 1 else resources
+        
+        policy_doc["Statement"].append({
+            "Effect": effect,
+            "Action": list(actions_tuple),
+            "Resource": resource_value
+        })
+    
+    # Create directory if it doesn't exist
+    output_dir = os.path.dirname(output_file)
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    # Write policy to JSON file
+    with open(output_file, 'w') as f:
+        json.dump(policy_doc, f, indent=2)
+    
+    print(f"IAM policy JSON generated: {output_file}")
+    return output_file
+
+
 def generate_pdf_report(
     template_file: str,
     principal_arn: str,
@@ -35,9 +108,9 @@ def generate_pdf_report(
     permissions_ok: bool,
     failed_simulations: List[Dict[str, Any]],
     output_file: str = None
-) -> str:
+) -> Tuple[str, Optional[str]]:
     """
-    Generate a PDF report from CloudFormation pre-flight check results.
+    Generate a PDF report and IAM policy JSON file from CloudFormation pre-flight check results.
     
     Args:
         template_file: Path to the CloudFormation template
@@ -52,7 +125,9 @@ def generate_pdf_report(
         output_file: Path to save the PDF report (optional)
         
     Returns:
-        Path to the generated PDF file
+        Tuple containing:
+            - Path to the generated PDF file
+            - Path to the generated IAM policy JSON file (or None if permissions_ok is True)
     """
     # Create reports directory if it doesn't exist
     reports_dir = "reports"
@@ -63,11 +138,16 @@ def generate_pdf_report(
     if not output_file:
         template_name = os.path.basename(template_file).split('.')[0]
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_file = os.path.join(reports_dir, f"cc_preflight_report_{template_name}_{timestamp}.pdf")
-    # If output_file is just a filename (not a path), put it in the reports directory
-    elif not os.path.dirname(output_file):
-        output_file = os.path.join(reports_dir, output_file)
-    
+        output_base = f"cc_preflight_report_{template_name}_{timestamp}"
+        pdf_output_file = os.path.join(reports_dir, f"{output_base}.pdf")
+    else:
+        # If output_file is just a filename (not a path), put it in the reports directory
+        if not os.path.dirname(output_file):
+            output_file = os.path.join(reports_dir, output_file)
+        
+        # Extract base filename without extension for JSON file
+        pdf_output_file = output_file
+        
     # Generate HTML content
     html_content = _generate_html_content(
         template_file, principal_arn, region, actions, resource_arns,
@@ -87,6 +167,8 @@ def generate_pdf_report(
         html_path = html_file.name
         css_path = css_file.name
     
+    json_output_file = None
+    
     try:
         # Configure fonts
         font_config = FontConfiguration()
@@ -96,10 +178,17 @@ def generate_pdf_report(
         css = CSS(filename=css_path, font_config=font_config)
         
         # Render and write PDF
-        html.write_pdf(output_file, stylesheets=[css], font_config=font_config)
+        html.write_pdf(pdf_output_file, stylesheets=[css], font_config=font_config)
         
-        print(f"PDF report generated: {output_file}")
-        return output_file
+        print(f"PDF report generated: {pdf_output_file}")
+        
+        # Generate IAM policy JSON file if permissions check failed
+        if not permissions_ok and failed_simulations:
+            # Create JSON filename with same base name as PDF
+            json_output_file = os.path.splitext(pdf_output_file)[0] + '.json'
+            generate_iam_policy_json(failed_simulations, json_output_file)
+        
+        return pdf_output_file, json_output_file
     
     finally:
         # Clean up temporary files
@@ -152,7 +241,7 @@ def _generate_html_content(
     # Count failed actions
     failed_actions = len(failed_simulations)
     
-    # Group failed actions by resource for policy generation
+    # First, group actions by resource
     resource_to_actions = {}
     for result in failed_simulations:
         action = result.get('EvalActionName', '')
@@ -162,17 +251,36 @@ def _generate_html_content(
             resource_to_actions[resource] = []
         resource_to_actions[resource].append(action)
     
-    # Generate policy document for missing permissions
+    # Now, reverse the mapping to group resources by effect and actions
+    # Using (effect, tuple(sorted_actions)) as key for the dictionary
+    effect_actions_to_resources = {}
+    for resource, actions_list in resource_to_actions.items():
+        # Sort actions to ensure consistent grouping
+        sorted_actions = tuple(sorted(actions_list))
+        # Default effect is "Allow" for all statements in this context
+        effect = "Allow"
+        
+        key = (effect, sorted_actions)
+        if key not in effect_actions_to_resources:
+            effect_actions_to_resources[key] = []
+        effect_actions_to_resources[key].append(resource)
+    
+    # Generate condensed policy document
     policy_doc = {
         "Version": "2012-10-17",
         "Statement": []
     }
     
-    for resource, actions_list in resource_to_actions.items():
+    # Create statements with grouped resources
+    for (effect, actions_tuple), resources in effect_actions_to_resources.items():
+        # If there's only one resource, use a string
+        # If there are multiple resources, use an array
+        resource_value = resources[0] if len(resources) == 1 else resources
+        
         policy_doc["Statement"].append({
-            "Effect": "Allow",
-            "Action": sorted(actions_list),
-            "Resource": resource
+            "Effect": effect,
+            "Action": list(actions_tuple),
+            "Resource": resource_value
         })
     
     # Format policy as JSON string with indentation

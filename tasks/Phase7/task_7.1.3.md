@@ -1,6 +1,6 @@
 # Task Status (DO NOT DELETE)
 - **ID**: 7.1.3
-- **Title**: Implement PDF Report Generation Module (Revision 3)
+- **Title**: Implement PDF Report and Condensed IAM Policy JSON Generation (Revision 5)
 - **AssignedTo**: code
 - **From**: architect (Task 7.1.3 User Request & Feedback)
 - **Priority**: High
@@ -15,15 +15,19 @@
 - For each shortcoming related to permissions, the report must include a suggested IAM policy snippet to grant the missing permissions. **The generation of this policy snippet should be automatic and not prompt the user.**
 - The report should be designed to present detailed information without being overwhelming.
 - **Generated PDF reports must be saved by default into a subdirectory named `reports/`. This directory should be created if it does not already exist.**
-- **The `cc_preflight.py` script should generate the PDF report by default when executed. The `--generate-pdf` flag should be removed or made redundant if PDF generation is default.**
-- The `--pdf-output` flag should still allow specifying a custom output path/filename for the PDF report, overriding the default `reports/` location.
+- **The `cc_preflight.py` script should generate the PDF report by default when executed.**
+- **Alongside the PDF report, a JSON file containing the consolidated IAM policy for all identified missing permissions must be generated. This JSON file should share the same base filename as the PDF report and be saved in the `reports/` subdirectory with a `.json` extension.**
+- **The generated IAM policy JSON must be condensed. Statements with identical "Effect" and "Action" lists should be grouped by listing their "Resource" ARNs in an array under a single statement, rather than creating a separate statement for each resource.**
+- The `--pdf-output` flag (or a new `--output-basename` flag if more appropriate) should allow specifying a custom output base path/filename for both the PDF and JSON files, overriding the default `reports/` location and timestamped name.
+- The `--no-pdf` flag should also prevent the generation of the IAM policy JSON file.
 ### Acceptance Criteria (AC):
-- A Python module (`report_generator.py` or similar) is created.
+- A Python module (`report_generator.py` or similar) is created/updated.
 - The module can accept structured data (e.g., from `cc_preflight.py` analysis results) as input.
-- The `cc_preflight.py` script generates a PDF report by default upon completion of its checks.
-- The PDF report is saved to the `reports/` subdirectory by default.
+- The `cc_preflight.py` script generates a PDF report AND an IAM policy JSON file by default upon completion of its checks.
+- Both the PDF report and the IAM policy JSON file are saved to the `reports/` subdirectory by default.
+- The PDF and JSON files share the same base filename (e.g., `report_XYZ.pdf` and `report_XYZ.json`).
 - The `reports/` subdirectory is created automatically if it doesn't exist.
-- The `--pdf-output` argument in `cc_preflight.py` correctly overrides the default output location.
+- The `--pdf-output` (or equivalent) argument in `cc_preflight.py` correctly overrides the default output location and base filename for BOTH files.
 - The PDF report includes:
     - Cover Page (Title, Date)
     - Table of Contents (if feasible with the chosen library and complexity)
@@ -31,13 +35,15 @@
     - Detailed Findings (status, description, details of shortcomings)
     - IAM Policy Snippets for remediation of permission-related shortcomings (generated automatically without user prompts).
 - The generated PDF is well-formatted and readable.
-- The test script (`test_report_generation.py`) runs successfully using `python3` and saves its output to the `reports/` subdirectory.
+- The generated JSON IAM policy file is valid JSON and contains the necessary policy statements, **condensed by grouping common actions and effects under a list of resources.**
+- The test script (`test_report_generation.py`) runs successfully using `python3` and saves both its PDF and condensed JSON outputs to the `reports/` subdirectory.
 - **No interactive prompt for IAM policy generation exists in the CLI workflow when generating reports.**
+- If `--no-pdf` is used, neither the PDF nor the JSON IAM policy file is generated.
 ## Planning
 - **Dependencies**: Output from the core analysis (e.g., `iam_simulator.py`, `resource_processor.py`).
 - **Effort**: Medium
 - **Start Date**: 2025-05-17 00:35
-- **End Date**: 2025-05-17 00:54
+- **End Date**: 2025-05-17 01:11
 ## Documentation
 ### Outcome/Summary:
 Implemented a PDF report generation module using WeasyPrint that converts HTML/CSS to PDF. The module creates professional reports with a clear structure including:
@@ -52,10 +58,11 @@ Implemented a PDF report generation module using WeasyPrint that converts HTML/C
    - Steps to create missing prerequisite resources
    - IAM policy snippets to grant missing permissions
 
-The implementation is integrated into the CLI handler. PDF reports are generated by default.
-- The `--pdf-output` command-line option allows specifying a custom path to save the PDF report (defaulting to `reports/` subdirectory).
+The implementation is integrated into the CLI handler. PDF reports (and accompanying IAM policy JSON files) are generated by default.
+- The `--pdf-output` command-line option allows specifying a custom path/basename to save the PDF report and JSON policy file (defaulting to `reports/` subdirectory).
+- The `--no-pdf` flag disables generation of both PDF and JSON files.
 
-The report is visually appealing with consistent styling, color-coded status indicators, and a professional layout. It provides a comprehensive overview of the pre-flight check results in a format suitable for sharing with stakeholders.
+The report is visually appealing with consistent styling, color-coded status indicators, and a professional layout. It provides a comprehensive overview of the pre-flight check results in a format suitable for sharing with stakeholders. The generated IAM policy JSON is condensed for better readability and usability.
 
 ### Issues/Blockers:
 - [2025-05-17 00:42] - Test script execution failed with `python: command not found`. Should use `python3`. (Status: Resolved)
@@ -65,9 +72,13 @@ The report is visually appealing with consistent styling, color-coded status ind
 - [2025-05-17 00:48] - Modified report_generator.py to save PDF reports to the "reports/" subdirectory by default and create the directory if it doesn't exist. (Status: Resolved)
 - [2025-05-17 00:52] - `cc_preflight.py` does not generate PDF report by default. (Status: Resolved)
 - [2025-05-17 00:54] - Modified `cli_handler.py` to generate PDF reports by default and replaced `--generate-pdf` flag with `--no-pdf` flag to opt out of report generation. (Status: Resolved)
+- [2025-05-17 00:59] - Need to generate an IAM policy JSON file alongside the PDF report. (Status: Resolved)
+- [2025-05-17 01:01] - Implemented JSON policy file generation alongside PDF report. (Status: Resolved)
+- [2025-05-17 01:09] - Generated IAM policy JSON is too verbose and needs to be condensed by grouping common actions/effects for multiple resources. (Status: Resolved)
+- [2025-05-17 01:11] - Implemented condensed IAM policy JSON generation by grouping statements with identical "Effect" and "Action" lists into a single statement with multiple resources. Updated both the `generate_iam_policy_json()` and `_generate_html_content()` functions to use the new condensed format. Enhanced the test script to verify and analyze the condensation of the policy. (Status: Resolved)
 
 ### Files:
-- `report_generator.py` (updated) - Core PDF generation module
-- `cli_handler.py` (updated) - Integration of PDF report generation into CLI
-- `cc_preflight.py` (updated) - Main script to trigger report generation by default
+- `report_generator.py` (updated) - Core PDF and JSON policy generation module
+- `cli_handler.py` (updated) - Integration of PDF/JSON report generation into CLI
+- `cc_preflight.py` (updated) - Main script to trigger report/JSON generation by default
 - `test_report_generation.py` (updated) - Test script

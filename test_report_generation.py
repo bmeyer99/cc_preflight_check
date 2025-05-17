@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
-Test script for PDF report generation.
+Test script for report generation.
 
-This script demonstrates how to use the PDF report generation functionality
-by creating a sample report with mock data.
+This script demonstrates how to use the report generation functionality
+by creating a sample PDF report and IAM policy JSON file with mock data.
 """
 
 import os
 import sys
 import datetime
+import json
+import os
+import argparse
 from typing import Dict, List, Any
 
 # Ensure the current directory is in the Python path
@@ -23,9 +26,14 @@ except ImportError:
 
 def main():
     """
-    Generate a sample PDF report with mock data.
+    Generate a sample PDF report and IAM policy JSON file with mock data.
     """
-    print("Generating sample PDF report...")
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Test report generation.")
+    parser.add_argument("--pdf-output", help="Path to save the PDF report.")
+    args = parser.parse_args()
+    
+    print("Generating sample reports...")
     
     # Mock data for testing
     template_file = "test_cfts/01_iam_role.yml"
@@ -56,31 +64,48 @@ def main():
         }
     ]
     
-    # Sample failed simulations
+    # Sample failed simulations with multiple resources having the same actions
+    # This will demonstrate the condensation feature
     failed_simulations = [
         {
             "EvalActionName": "iam:PassRole",
-            "EvalResourceName": "arn:aws:iam::123456789012:role/TestRole",
+            "EvalResourceName": "arn:aws:iam::123456789012:role/TestRole1",
+            "EvalDecision": "implicitly denied",
+            "OrganizationsDecisionDetail": {"AllowedByOrganizations": False}
+        },
+        {
+            "EvalActionName": "iam:PassRole",
+            "EvalResourceName": "arn:aws:iam::123456789012:role/TestRole2",
             "EvalDecision": "implicitly denied",
             "OrganizationsDecisionDetail": {"AllowedByOrganizations": False}
         },
         {
             "EvalActionName": "cloudformation:CreateStack",
-            "EvalResourceName": "arn:aws:cloudformation:us-east-1:123456789012:stack/TestStack/*",
+            "EvalResourceName": "arn:aws:cloudformation:us-east-1:123456789012:stack/TestStack1/*",
+            "EvalDecision": "implicitly denied"
+        },
+        {
+            "EvalActionName": "cloudformation:CreateStack",
+            "EvalResourceName": "arn:aws:cloudformation:us-east-1:123456789012:stack/TestStack2/*",
+            "EvalDecision": "implicitly denied"
+        },
+        {
+            "EvalActionName": "s3:GetObject",
+            "EvalResourceName": "arn:aws:s3:::test-bucket/file1.txt",
             "EvalDecision": "implicitly denied"
         }
     ]
     
     # Generate timestamp for output filename
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = f"sample_report_{timestamp}.pdf"
+    output_file = args.pdf_output if args.pdf_output else f"sample_report_{timestamp}.pdf"
     
     # Note: We don't need to specify the reports/ directory here
     # as the report_generator will automatically save to reports/ if only a filename is provided
     
     try:
-        # Generate the PDF report
-        pdf_file = generate_pdf_report(
+        # Generate the PDF report and IAM policy JSON
+        pdf_file, json_file = generate_pdf_report(
             template_file=template_file,
             principal_arn=principal_arn,
             region=region,
@@ -94,7 +119,75 @@ def main():
         )
         
         print(f"Sample PDF report generated: {pdf_file}")
-        print("You can open this file to view the report.")
+        
+        # Verify the JSON file was created and contains valid content
+        if json_file and os.path.exists(json_file):
+            print(f"Sample IAM policy JSON generated: {json_file}")
+            
+            # Validate JSON content
+            try:
+                with open(json_file, 'r') as f:
+                    policy = json.load(f)
+                
+                # Basic validation of the policy structure
+                if (isinstance(policy, dict) and
+                    policy.get("Version") == "2012-10-17" and
+                    isinstance(policy.get("Statement"), list)):
+                    
+                    # Check if the policy is properly condensed
+                    is_condensed = False
+                    for statement in policy.get("Statement", []):
+                        # Check if any statement has a list of resources
+                        if isinstance(statement.get("Resource"), list) and len(statement.get("Resource", [])) > 1:
+                            is_condensed = True
+                            break
+                    
+                    if is_condensed:
+                        print("IAM policy JSON validation: PASSED (Condensed format verified)")
+                    else:
+                        print("IAM policy JSON validation: PASSED (Note: No resource grouping detected in this example)")
+                    
+                    # Print the policy for demonstration
+                    print("\nGenerated IAM Policy:")
+                    print(json.dumps(policy, indent=2))
+                    
+                    # Additional validation for condensed format
+                    print("\nPolicy Condensation Analysis:")
+                    
+                    # Count total statements
+                    total_statements = len(policy.get("Statement", []))
+                    print(f"Total statements: {total_statements}")
+                    
+                    # Count resources and actions
+                    total_resources = 0
+                    total_actions = 0
+                    for statement in policy.get("Statement", []):
+                        if isinstance(statement.get("Resource"), list):
+                            total_resources += len(statement.get("Resource", []))
+                        else:
+                            total_resources += 1
+                        
+                        if isinstance(statement.get("Action"), list):
+                            total_actions += len(statement.get("Action", []))
+                        else:
+                            total_actions += 1
+                    
+                    print(f"Total resources: {total_resources}")
+                    print(f"Total actions: {total_actions}")
+                    
+                    # Calculate condensation ratio
+                    if total_resources > total_statements:
+                        condensation_ratio = (total_resources - total_statements) / total_resources
+                        print(f"Condensation ratio: {condensation_ratio:.2%}")
+                        print("(Higher percentage indicates more effective grouping)")
+                else:
+                    print("IAM policy JSON validation: FAILED - Invalid policy structure")
+            except json.JSONDecodeError:
+                print("IAM policy JSON validation: FAILED - Invalid JSON format")
+            except Exception as e:
+                print(f"IAM policy JSON validation: FAILED - {e}")
+        else:
+            print("IAM policy JSON was not generated")
         
     except Exception as e:
         print(f"Error generating PDF report: {e}")

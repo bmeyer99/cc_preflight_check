@@ -336,7 +336,7 @@ def main() -> None:
             print("[FAIL] IAM permission simulation indicates missing permissions.")
             print("        Review the simulation details above for denied actions.")
 
-        # Generate PDF report by default unless --no-pdf is specified
+        # Generate PDF report and IAM policy JSON by default unless --no-pdf is specified
         if not args.no_pdf:
             try:
                 from report_generator import generate_pdf_report, update_task_status
@@ -346,8 +346,8 @@ def main() -> None:
                 if task_file and os.path.exists(task_file):
                     update_task_status(task_file, "In Progress")
                 
-                # Generate PDF report
-                pdf_file = generate_pdf_report(
+                # Generate PDF report and IAM policy JSON
+                pdf_file, json_file = generate_pdf_report(
                     template_file=args.template_file,
                     principal_arn=args.deploying_principal_arn,
                     region=args.region,
@@ -361,6 +361,8 @@ def main() -> None:
                 )
                 
                 print(f"\nPDF report generated: {pdf_file}")
+                if json_file:
+                    print(f"IAM policy JSON generated: {json_file}")
                 
                 # Update task status if task file is provided
                 if task_file and os.path.exists(task_file):
