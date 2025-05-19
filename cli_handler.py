@@ -319,7 +319,7 @@ def main() -> None:
                 "ContextKeyType": "string"
             })
 
-        permissions_ok, failed_sims = simulate_iam_permissions(
+        permissions_ok, all_simulation_results = simulate_iam_permissions(
             iam_client, args.deploying_principal_arn, actions, resource_arns, context_entries
         )
 
@@ -358,7 +358,7 @@ def main() -> None:
                     prereq_checks=prerequisite_checks,
                     prereqs_ok=prereqs_ok,
                     permissions_ok=permissions_ok,
-                    failed_simulations=failed_sims,
+                    failed_simulations=all_simulation_results,
                     output_file=args.pdf_output
                 )
                 

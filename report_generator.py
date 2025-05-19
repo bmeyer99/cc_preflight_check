@@ -131,7 +131,7 @@ def generate_pdf_report(
     prereq_checks: List[Dict[str, Any]],
     prereqs_ok: bool,
     permissions_ok: bool,
-    failed_simulations: List[Dict[str, Any]],
+    all_simulation_results: List[Dict[str, Any]],
     output_file: str = None
 ) -> Tuple[str, Optional[str]]:
     """
@@ -154,7 +154,7 @@ def generate_pdf_report(
         prereq_checks: List of prerequisite checks performed
         prereqs_ok: Boolean indicating if all prerequisite checks passed
         permissions_ok: Boolean indicating if all permissions checks passed
-        failed_simulations: List of failed simulation results
+        all_simulation_results: List of all simulation evaluation results (allowed and denied)
         output_file: Path to save the PDF report (optional)
         
     Returns:
@@ -185,7 +185,7 @@ def generate_pdf_report(
     # Generate HTML content
     html_content = _generate_html_content(
         template_file, principal_arn, region, actions, resource_arns,
-        prereq_checks, prereqs_ok, permissions_ok, failed_simulations
+        prereq_checks, prereqs_ok, permissions_ok, all_simulation_results
     )
     
     # Generate CSS styling
@@ -244,11 +244,13 @@ def generate_pdf_report(
             # report_output_path remains None
     
     # Generate IAM policy JSON file if permissions check failed
-    if not permissions_ok and failed_simulations:
+    # Filter to get only actual failed simulations for policy generation
+    actual_failed_simulations = [sim for sim in all_simulation_results if sim.get('EvalDecision') != 'allowed']
+    if not permissions_ok and actual_failed_simulations:
         # Use the original intended PDF base name for consistency
         json_filename_base = os.path.splitext(pdf_output_file)[0]
         json_output_file = f"{json_filename_base}.json"
-        generate_iam_policy_json(failed_simulations, json_output_file)
+        generate_iam_policy_json(actual_failed_simulations, json_output_file)
     
     # Clean up temporary files
     try:
@@ -269,7 +271,7 @@ def _generate_html_content(
     prereq_checks: List[Dict[str, Any]],
     prereqs_ok: bool,
     permissions_ok: bool,
-    failed_simulations: List[Dict[str, Any]]
+    all_simulation_results: List[Dict[str, Any]]
 ) -> str:
     """
     Generate HTML content for the PDF report.
@@ -283,7 +285,7 @@ def _generate_html_content(
         prereq_checks: List of prerequisite checks performed
         prereqs_ok: Boolean indicating if all prerequisite checks passed
         permissions_ok: Boolean indicating if all permissions checks passed
-        failed_simulations: List of failed simulation results
+        all_simulation_results: List of all simulation evaluation results (allowed and denied)
         
     Returns:
         HTML content as a string
@@ -299,15 +301,17 @@ def _generate_html_content(
     total_actions = len(actions)
     total_resources = len(resource_arns)
     
-    # Count failed actions
-    failed_actions = len(failed_simulations)
+    # Count failed actions (actual failures)
+    actual_failed_simulations = [sim for sim in all_simulation_results if sim.get('EvalDecision') != 'allowed']
+    failed_actions = len(actual_failed_simulations)
     
-    # Initialize collections for different types of actions
+    # Initialize collections for different types of actions for policy generation (uses only failed ones)
     cloudformation_actions = set()
     passrole_resources = set()
     other_service_actions = {}  # Format: {(service, resource): [actions]}
     
-    for result in failed_simulations:
+    # For IAM policy JSON, only consider actual failed simulations
+    for result in actual_failed_simulations:
         action = result.get('EvalActionName', '')
         resource = result.get('EvalResourceName', '*')
         
@@ -516,43 +520,50 @@ def _generate_html_content(
                 <tbody>
 """
     
-    # Add failed permission check results
-    if failed_simulations:
-        for result in failed_simulations:
+    # Add all permission check results (allowed and denied)
+    if all_simulation_results:
+        for result in all_simulation_results:
             action = result.get('EvalActionName', 'Unknown')
             resource = result.get('EvalResourceName', '*')
             decision = result.get('EvalDecision', 'Unknown')
             
-            # Check for specific denial reasons
-            denial_reasons = []
-            if result.get('OrganizationsDecisionDetail', {}).get('AllowedByOrganizations') == False:
-                denial_reasons.append("Denied by Organizations SCP")
-            if result.get('PermissionsBoundaryDecisionDetail', {}).get('AllowedByPermissionsBoundary') == False:
-                denial_reasons.append("Denied by Permissions Boundary")
+            status_text = "PASS" if decision == "allowed" else "FAIL"
+            status_class = "status-green" if decision == "allowed" else "status-red"
             
-            details = ", ".join(denial_reasons) if denial_reasons else decision
-            
+            details = decision # Default detail is the decision itself
+            if decision != "allowed":
+                denial_reasons = []
+                if result.get('OrganizationsDecisionDetail', {}).get('AllowedByOrganizations') == False:
+                    denial_reasons.append("Denied by Organizations SCP")
+                if result.get('PermissionsBoundaryDecisionDetail', {}).get('AllowedByPermissionsBoundary') == False:
+                    denial_reasons.append("Denied by Permissions Boundary")
+                
+                if denial_reasons:
+                    details = f"{decision} ({', '.join(denial_reasons)})"
+            else:
+                details = "Allowed"
+
             html += f"""
                     <tr>
                         <td>{action}</td>
                         <td>{resource}</td>
-                        <td class="status-red">FAIL</td>
+                        <td class="{status_class}">{status_text}</td>
                         <td>{details}</td>
                     </tr>
 """
-    elif not permissions_ok:
+    elif not actions: # No actions were simulated at all
         html += f"""
                     <tr>
-                        <td colspan="4">Permission check failed, but no specific failed simulations were recorded.</td>
+                        <td colspan="4">No IAM actions were identified for simulation.</td>
                     </tr>
 """
-    else:
+    else: # Actions were identified, but simulation results are empty (should not happen if actions exist)
         html += f"""
                     <tr>
-                        <td colspan="4">All permission checks passed.</td>
+                        <td colspan="4">No simulation results available. All permissions are implicitly denied or an error occurred.</td>
                     </tr>
 """
-    
+
     html += """
                 </tbody>
             </table>

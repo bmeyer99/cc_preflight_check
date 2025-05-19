@@ -145,7 +145,7 @@ def simulate_iam_permissions(iam_client, principal_arn: str, actions: List[str],
     Returns:
         Tuple containing:
         - Boolean indicating if all actions are allowed
-        - List of failed simulation results
+        - List of all simulation evaluation results (both allowed and denied)
         
     Raises:
         AWSError: If there are issues with AWS API calls
@@ -176,6 +176,7 @@ def simulate_iam_permissions(iam_client, principal_arn: str, actions: List[str],
         # we'll simulate each action individually
         all_allowed = True
         all_failed_simulations = []
+        all_evaluation_results = [] # Stores all results
         
         # Process actions one by one
         print(f"  Processing {len(actions)} actions individually")
@@ -215,6 +216,7 @@ def simulate_iam_permissions(iam_client, principal_arn: str, actions: List[str],
                 
                 # Process results
                 for eval_result in response.get('EvaluationResults', []):
+                    all_evaluation_results.append(eval_result) # Store all results
                     eval_action_name = eval_result['EvalActionName']
                     eval_decision = eval_result['EvalDecision']
                     eval_resource_name = eval_result.get('EvalResourceName', '*')
@@ -282,7 +284,7 @@ def simulate_iam_permissions(iam_client, principal_arn: str, actions: List[str],
             print("  Note: These are only the permissions needed by the deploying principal to manage the stack")
             print("        and access prerequisite resources, not permissions for resources created by the stack.")
         
-        return all_allowed, all_failed_simulations
+        return all_allowed, all_evaluation_results
 
     except ClientError as e:
         error_msg = f"IAM simulation failed: {e}"
