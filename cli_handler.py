@@ -358,7 +358,7 @@ def main() -> None:
                     prereq_checks=prerequisite_checks,
                     prereqs_ok=prereqs_ok,
                     permissions_ok=permissions_ok,
-                    failed_simulations=all_simulation_results,
+                    all_simulation_results=all_simulation_results,
                     output_file=args.pdf_output
                 )
                 
